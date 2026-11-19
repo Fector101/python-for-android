@@ -319,6 +319,65 @@ def test_get_work_info_rejects_invalid_json(java):
         work_manager.get_work_infos("bad")
 
 
+def test_get_work_info_unwraps_worker_result_data(java):
+    _, calls = java
+    calls["info_json"] = json.dumps({
+        "found": True,
+        "infos": [{
+            "state": "SUCCEEDED",
+            "output": {"PYTHON_WORK_OUTPUT": '{"message":"done","steps":3}'},
+            "progress": {"PYTHON_WORK_PROGRESS": '{"step":3,"total":3}'},
+        }],
+    })
+
+    info = work_manager.get_work_info("result_once")
+
+    assert info.output == {"message": "done", "steps": 3}
+    assert info.progress == {"step": 3, "total": 3}
+
+
+def test_get_work_info_keeps_plain_result_data(java):
+    _, calls = java
+    calls["info_json"] = json.dumps({
+        "found": True,
+        "infos": [{
+            "state": "SUCCEEDED",
+            "output": {"message": "plain"},
+            "progress": {"PYTHON_WORK_PROGRESS": "not json"},
+        }],
+    })
+
+    info = work_manager.get_work_info("plain")
+
+    assert info.output == {"message": "plain"}
+    assert info.progress == {"PYTHON_WORK_PROGRESS": "not json"}
+
+
+def test_work_result_dir_matches_java_for_pyc_entrypoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/result.pyc")
+    from work_result import work_dir
+
+    # start.c resolves workers/result.py -> workers/result.pyc, while Java
+    # keeps the .py name; both must map to workers_result.py on disk.
+    assert work_dir() == str(tmp_path / "work_data" / "workers_result.py")
+
+
+def test_work_result_writes_output_and_progress(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/result.py")
+    from work_result import set_output, set_progress
+
+    set_progress({"step": 1, "total": 2})
+    set_output({"message": "done"})
+
+    base = tmp_path / "work_data" / "workers_result.py"
+    assert json.loads((base / "progress.json").read_text()) == {
+        "step": 1, "total": 2}
+    assert json.loads((base / "output.json").read_text()) == {
+        "message": "done"}
+
+
 def test_work_object_exposes_work_info(java):
     _, calls = java
     calls["info_json"] = '{"found":true,"infos":[{"state":"SUCCEEDED"}]}'

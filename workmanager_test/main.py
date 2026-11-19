@@ -55,6 +55,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule periodic (15m)", self.schedule_periodic))
         root.add_widget(self._button("Schedule failing script (10s)", self.schedule_failing))
         root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
+        root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Cancel work", self.cancel_work))
         root.add_widget(self._button("Cancel all", self.cancel_all_work))
         root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
@@ -192,6 +193,23 @@ class WorkManagerTestApp(App):
                 **constraints,
             ).schedule()
             self._note("Scheduled slow heartbeat: slow_once ({}, policy={})".format(
+                self._constraint_text(constraints), self.policy))
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def schedule_result(self, _=None, touch=None):
+        constraints = self.constraints
+        try:
+            Work(
+                name="result_once",
+                script="workers/result.py",
+                args={"message": "output demo", "steps": 3},
+                delay_seconds=2,
+                policy=self.policy,
+                **constraints,
+            ).schedule()
+            self._note("Scheduled result worker: result_once ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))

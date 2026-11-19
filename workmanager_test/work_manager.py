@@ -251,6 +251,26 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _normalise_result_data(value: Any) -> Dict[str, Any]:
+    """Unwrap the JSON string written by a worker's set_output/set_progress.
+
+    WorkManager Data only holds primitives, so the Java side stores the worker's
+    JSON object as a string under PYTHON_WORK_OUTPUT / PYTHON_WORK_PROGRESS.
+    Plain Data keys are passed through unchanged.
+    """
+    data = _as_dict(value)
+    for key in ("PYTHON_WORK_OUTPUT", "PYTHON_WORK_PROGRESS"):
+        raw = data.get(key)
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return data
+
+
 def _parse_info_json(raw: str) -> WorkInfos:
     """Parse the JSON produced by ``ScriptWorker.getInfoJson``."""
     try:
@@ -271,8 +291,8 @@ def _parse_info_json(raw: str) -> WorkInfos:
             run_attempt_count=_as_int(item.get("runAttemptCount")),
             generation=_as_int(item.get("generation")),
             tags=tuple(str(tag) for tag in tags) if isinstance(tags, list) else (),
-            output=_as_dict(item.get("output")),
-            progress=_as_dict(item.get("progress")),
+            output=_normalise_result_data(item.get("output")),
+            progress=_normalise_result_data(item.get("progress")),
             initial_delay_ms=_as_int(item.get("initialDelayMillis")),
             next_schedule_time_ms=_as_int(item.get("nextScheduleTimeMillis")),
             stop_reason=_as_int(item.get("stopReason")),
