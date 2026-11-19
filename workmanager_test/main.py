@@ -4,12 +4,11 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
-print("got here")
 from work_manager import Work, cancel, get_info
-print("got here1")
 
 
 class WorkManagerTestApp(App):
@@ -30,6 +29,16 @@ class WorkManagerTestApp(App):
         self.name_input = TextInput(text=self.work_name, multiline=False)
         name_row.add_widget(self.name_input)
         root.add_widget(name_row)
+
+        constraint_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        constraint_row.add_widget(Label(text="Constraints:", size_hint_x=0.35))
+        self.network_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        constraint_row.add_widget(self.network_cb)
+        constraint_row.add_widget(Label(text="network", size_hint_x=0.25))
+        self.charging_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        constraint_row.add_widget(self.charging_cb)
+        constraint_row.add_widget(Label(text="charging", size_hint_x=0.25))
+        root.add_widget(constraint_row)
 
         root.add_widget(self._button("Schedule one-time (10s)", self.schedule_once))
         root.add_widget(self._button("Schedule periodic (15m)", self.schedule_periodic))
@@ -70,10 +79,29 @@ class WorkManagerTestApp(App):
         name = self.name_input.text.strip() if self.name_input else self.work_name
         return name or self.work_name
 
+    @property
+    def constraints(self):
+        network = getattr(self, "network_cb", None)
+        charging = getattr(self, "charging_cb", None)
+        return {
+            "network_required": bool(network and network.activated),
+            "charging_required": bool(charging and charging.activated),
+        }
+
+    @staticmethod
+    def _constraint_text(constraints):
+        parts = []
+        if constraints["network_required"]:
+            parts.append("network")
+        if constraints["charging_required"]:
+            parts.append("charging")
+        return "requires " + "+".join(parts) if parts else "no constraints"
+
     def _note(self, text):
         self.log.text = "Log:\n{}".format(text)
 
     def schedule_once(self, _=None, touch=None):
+        constraints = self.constraints
         try:
             Work(
                 name=self.current_name,
@@ -81,13 +109,16 @@ class WorkManagerTestApp(App):
                 args={"message": self.message},
                 delay_seconds=10,
                 policy="replace",
+                **constraints,
             ).schedule()
-            self._note("Scheduled one-time heartbeat: {}".format(self.current_name))
+            self._note("Scheduled one-time heartbeat: {} ({})".format(
+                self.current_name, self._constraint_text(constraints)))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
 
     def schedule_periodic(self, _=None, touch=None):
+        constraints = self.constraints
         try:
             Work(
                 name="heartbeat_periodic",
@@ -95,13 +126,16 @@ class WorkManagerTestApp(App):
                 args={"message": "periodic"},
                 interval_minutes=15,
                 policy="replace",
+                **constraints,
             ).schedule()
-            self._note("Scheduled periodic heartbeat: heartbeat_periodic")
+            self._note("Scheduled periodic heartbeat: heartbeat_periodic ({})".format(
+                self._constraint_text(constraints)))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
 
     def schedule_failing(self, _=None, touch=None):
+        constraints = self.constraints
         try:
             Work(
                 name="failing_once",
@@ -109,8 +143,10 @@ class WorkManagerTestApp(App):
                 args={"message": "expected failure"},
                 delay_seconds=10,
                 policy="replace",
+                **constraints,
             ).schedule()
-            self._note("Scheduled failing script: failing_once")
+            self._note("Scheduled failing script: failing_once ({})".format(
+                self._constraint_text(constraints)))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()

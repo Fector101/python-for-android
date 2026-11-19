@@ -91,6 +91,25 @@ def test_periodic_schedule_arguments(java):
     assert args[9] == "keep"
 
 
+def test_one_time_schedule_passes_constraints(java):
+    _, calls = java
+    work_manager.Work(
+        name="constrained_once",
+        script="workers/heartbeat.py",
+        delay_seconds=10,
+        network_required=True,
+        charging_required=True,
+    ).schedule()
+
+    (context, name, script, data, periodic, delay, interval,
+     network, charging, policy) = calls["schedule"]
+    assert name == "constrained_once"
+    assert periodic is False
+    assert delay == 10
+    assert network is True
+    assert charging is True
+
+
 def test_custom_worker_name(java):
     _, calls = java
     work_manager.Work(
