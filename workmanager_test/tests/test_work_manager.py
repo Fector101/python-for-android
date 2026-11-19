@@ -78,6 +78,17 @@ def test_one_time_schedule_arguments(java):
     ]
 
 
+def test_explicit_keep_policy_reaches_java(java):
+    _, calls = java
+    work_manager.Work(
+        name="keep_once",
+        script="workers/heartbeat.py",
+        policy="keep",
+    ).schedule()
+
+    assert calls["schedule"][9] == "keep"
+
+
 def test_periodic_schedule_arguments(java):
     _, calls = java
     work_manager.Work(

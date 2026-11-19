@@ -8,13 +8,14 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
-from work_manager import Work, cancel, get_work_info
+from work_manager import Work, cancel, cancel_all, get_work_info
 
 
 class WorkManagerTestApp(App):
     def build(self):
         self.work_name = "heartbeat_once"
         self.message = "hello from WorkManager"
+        self.policy = "replace"
 
         root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
@@ -40,10 +41,19 @@ class WorkManagerTestApp(App):
         constraint_row.add_widget(Label(text="charging", size_hint_x=0.25))
         root.add_widget(constraint_row)
 
+        policy_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        policy_row.add_widget(Label(text="Policy:", size_hint_x=0.35))
+        self.policy_button = Button(text=self.policy, size_hint_x=0.65)
+        self.policy_button.bind(on_press=self.toggle_policy)
+        policy_row.add_widget(self.policy_button)
+        root.add_widget(policy_row)
+
         root.add_widget(self._button("Schedule one-time (10s)", self.schedule_once))
         root.add_widget(self._button("Schedule periodic (15m)", self.schedule_periodic))
         root.add_widget(self._button("Schedule failing script (10s)", self.schedule_failing))
+        root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
         root.add_widget(self._button("Cancel work", self.cancel_work))
+        root.add_widget(self._button("Cancel all", self.cancel_all_work))
         root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
 
         self.status = Label(
@@ -73,6 +83,10 @@ class WorkManagerTestApp(App):
         button = Button(text=text, size_hint_y=None, height=48)
         button.bind(on_press=callback)
         return button
+
+    def toggle_policy(self, _=None, touch=None):
+        self.policy = "keep" if self.policy == "replace" else "replace"
+        self.policy_button.text = self.policy
 
     @property
     def current_name(self):
@@ -108,11 +122,11 @@ class WorkManagerTestApp(App):
                 script="workers/heartbeat.py",
                 args={"message": self.message},
                 delay_seconds=10,
-                policy="replace",
+                policy=self.policy,
                 **constraints,
             ).schedule()
-            self._note("Scheduled one-time heartbeat: {} ({})".format(
-                self.current_name, self._constraint_text(constraints)))
+            self._note("Scheduled one-time heartbeat: {} ({}, policy={})".format(
+                self.current_name, self._constraint_text(constraints), self.policy))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
@@ -125,11 +139,11 @@ class WorkManagerTestApp(App):
                 script="workers/heartbeat.py",
                 args={"message": "periodic"},
                 interval_minutes=15,
-                policy="replace",
+                policy=self.policy,
                 **constraints,
             ).schedule()
-            self._note("Scheduled periodic heartbeat: heartbeat_periodic ({})".format(
-                self._constraint_text(constraints)))
+            self._note("Scheduled periodic heartbeat: heartbeat_periodic ({}, policy={})".format(
+                self._constraint_text(constraints), self.policy))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
@@ -142,11 +156,28 @@ class WorkManagerTestApp(App):
                 script="workers/failing.py",
                 args={"message": "expected failure"},
                 delay_seconds=10,
-                policy="replace",
+                policy=self.policy,
                 **constraints,
             ).schedule()
-            self._note("Scheduled failing script: failing_once ({})".format(
-                self._constraint_text(constraints)))
+            self._note("Scheduled failing script: failing_once ({}, policy={})".format(
+                self._constraint_text(constraints), self.policy))
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def schedule_slow(self, _=None, touch=None):
+        constraints = self.constraints
+        try:
+            Work(
+                name="slow_once",
+                script="workers/heartbeat.py",
+                args={"message": "slow work", "sleep_seconds": 30},
+                delay_seconds=2,
+                policy=self.policy,
+                **constraints,
+            ).schedule()
+            self._note("Scheduled slow heartbeat: slow_once ({}, policy={})".format(
+                self._constraint_text(constraints), self.policy))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
@@ -157,6 +188,14 @@ class WorkManagerTestApp(App):
             self._note("Cancelled: {}".format(self.current_name))
         except Exception as exc:
             self._note("Cancel failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def cancel_all_work(self, _=None, touch=None):
+        try:
+            cancel_all()
+            self._note("Cancelled all work")
+        except Exception as exc:
+            self._note("Cancel all failed: {!r}".format(exc))
         self.refresh_status()
 
     @staticmethod
