@@ -78,9 +78,30 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
     private static Constraints buildConstraints(
             boolean networkRequired,
             boolean chargingRequired) {
+        return buildConstraints(networkRequired, chargingRequired, "connected");
+    }
+
+    /** Map Python's network type names, falling back to CONNECTED. */
+    private static NetworkType parseNetworkType(String networkType) {
+        if ("unmetered".equalsIgnoreCase(networkType)) {
+            return NetworkType.UNMETERED;
+        }
+        if ("not_roaming".equalsIgnoreCase(networkType)) {
+            return NetworkType.NOT_ROAMING;
+        }
+        if ("not_required".equalsIgnoreCase(networkType)) {
+            return NetworkType.NOT_REQUIRED;
+        }
+        return NetworkType.CONNECTED;
+    }
+
+    private static Constraints buildConstraints(
+            boolean networkRequired,
+            boolean chargingRequired,
+            String networkType) {
         Constraints.Builder builder = new Constraints.Builder();
         if (networkRequired) {
-            builder.setRequiredNetworkType(NetworkType.CONNECTED);
+            builder.setRequiredNetworkType(parseNetworkType(networkType));
         }
         if (chargingRequired) {
             builder.setRequiresCharging(true);
@@ -150,7 +171,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String policy) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, "exponential", 30, "[]", true);
+                policy, "exponential", 30, "[]", true, "connected");
     }
 
     /** Schedule work with explicit retry backoff criteria. */
@@ -169,7 +190,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             long backoffDelaySeconds) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, backoffPolicy, backoffDelaySeconds, "[]", true);
+                policy, backoffPolicy, backoffDelaySeconds, "[]", true,
+                "connected");
     }
 
     /** Schedule work with custom tags as a JSON array of strings. */
@@ -189,7 +211,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String tagsJson) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, backoffPolicy, backoffDelaySeconds, tagsJson, true);
+                policy, backoffPolicy, backoffDelaySeconds, tagsJson, true,
+                "connected");
     }
 
     /**
@@ -212,9 +235,11 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String backoffPolicy,
             long backoffDelaySeconds,
             String tagsJson,
-            boolean unique) {
+            boolean unique,
+            String networkType) {
         Data data = buildInputData(script, serviceArgument);
-        Constraints constraints = buildConstraints(networkRequired, chargingRequired);
+        Constraints constraints = buildConstraints(
+                networkRequired, chargingRequired, networkType);
         BackoffPolicy backoff = parseBackoff(backoffPolicy);
         long backoffMillis = backoffMillis(backoffDelaySeconds);
         WorkManager manager = WorkManager.getInstance(context);
@@ -293,7 +318,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                                 step.optString("argument", "")))
                         .setConstraints(buildConstraints(
                                 step.optBoolean("network_required", false),
-                                step.optBoolean("charging_required", false)))
+                                step.optBoolean("charging_required", false),
+                                step.optString("network_type", "connected")))
                         .setBackoffCriteria(
                                 parseBackoff(step.optString("backoff_policy", "")),
                                 backoffMillis(step.optLong("backoff_delay_seconds", 30)),

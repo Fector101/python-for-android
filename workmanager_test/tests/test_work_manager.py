@@ -76,7 +76,7 @@ def test_one_time_schedule_arguments(java):
     assert work.schedule() is work
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique) = calls["schedule"]
+     tags_json, unique, network_type) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -91,6 +91,7 @@ def test_one_time_schedule_arguments(java):
     assert backoff_delay == 30
     assert tags_json == "[]"
     assert unique is True
+    assert network_type == "connected"
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -220,13 +221,66 @@ def test_one_time_schedule_passes_constraints(java):
 
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique) = calls["schedule"]
+     tags_json, unique, network_type) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
     assert network is True
     assert charging is True
     assert unique is True
+    assert network_type == "connected"
+
+
+@pytest.mark.parametrize("network_type", [
+    "connected", "unmetered", "not_roaming", "not_required",
+    "UNMETERED", "Not_Roaming",
+])
+def test_network_type_reaches_java(java, network_type):
+    _, calls = java
+    work = work_manager.Work(
+        name="network_type_once",
+        script="workers/heartbeat.py",
+        network_required=True,
+        network_type=network_type,
+    )
+    assert work.network_type == network_type.lower()
+    work.schedule()
+    assert calls["schedule"][14] == network_type.lower()
+
+
+def test_network_type_defaults_to_connected(java):
+    _, calls = java
+    work_manager.Work(
+        name="default_network", script="workers/heartbeat.py",
+    ).schedule()
+    assert calls["schedule"][14] == "connected"
+
+
+@pytest.mark.parametrize("network_type", [
+    "bogus", "", "wifi", "connected ", 42, None,
+])
+def test_invalid_network_type(network_type):
+    with pytest.raises(ValueError, match="network_type"):
+        work_manager.Work(
+            name="bad_network", script="workers/heartbeat.py",
+            network_type=network_type,
+        )
+
+
+def test_network_type_reaches_chain_step_json(java):
+    _, calls = java
+    work_manager.Work(
+        name="chain_net", script="workers/chain.py",
+        network_required=True, network_type="not_roaming",
+    ).then(work_manager.Work(
+        name="step2", script="workers/chain.py", network_type="UNMETERED",
+    )).schedule()
+
+    steps = json.loads(calls["scheduleChain"][3])
+    assert steps[0]["network_type"] == "not_roaming"
+    assert steps[0]["network_required"] is True
+    assert steps[1]["network_type"] == "unmetered"
+    assert steps[1]["network_required"] is False
 
 
 def test_custom_worker_name(java):
@@ -560,6 +614,7 @@ def test_chain_steps_json_carries_per_step_options(java):
         "argument": "{}",
         "delay_seconds": 3,
         "network_required": True,
+        "network_type": "connected",
         "charging_required": False,
         "backoff_policy": "linear",
         "backoff_delay_seconds": 12,
@@ -568,6 +623,7 @@ def test_chain_steps_json_carries_per_step_options(java):
     assert steps[1]["script"] == "workers/result.py"
     assert steps[1]["charging_required"] is True
     assert steps[1]["network_required"] is False
+    assert steps[1]["network_type"] == "connected"
 
 
 def test_chain_then_appends_third_step(java):

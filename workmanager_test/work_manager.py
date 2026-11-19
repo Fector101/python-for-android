@@ -154,7 +154,11 @@ class Work:
         delay_seconds: Initial delay for one-time work.
         interval_minutes: Interval for periodic work. Omit for one-time work;
             WorkManager enforces a 15-minute minimum.
-        network_required: Require a connected network.
+        network_required: Require a network of the type given by
+            ``network_type``.
+        network_type: ``"connected"`` (default), ``"unmetered"``,
+            ``"not_roaming"`` or ``"not_required"``. Only used when
+            ``network_required`` is true. Values are case-insensitive.
         charging_required: Require the device to be charging.
         policy: What to do when ``name`` already exists. One-time work accepts
             ``"keep"`` (default), ``"replace"``, ``"append"`` and
@@ -180,6 +184,7 @@ class Work:
     delay_seconds: int = 0
     interval_minutes: Optional[int] = None
     network_required: bool = False
+    network_type: str = "connected"
     charging_required: bool = False
     policy: str = "keep"
     backoff_policy: str = "exponential"
@@ -193,6 +198,15 @@ class Work:
         self.script = _validate_script(self.script)
         self.worker_name = _validate_worker_name(self.worker_name)
         self.unique = bool(self.unique)
+        if not isinstance(self.network_type, str):
+            raise ValueError("network_type must be a string")
+        self.network_type = self.network_type.lower()
+        if self.network_type not in (
+                "connected", "unmetered", "not_roaming", "not_required"):
+            raise ValueError(
+                "network_type must be one of 'connected', 'unmetered', "
+                "'not_roaming' or 'not_required'"
+            )
         self.delay_seconds = int(self.delay_seconds)
         if self.delay_seconds < 0:
             raise ValueError("delay_seconds must be >= 0")
@@ -284,6 +298,7 @@ class Work:
             self.backoff_delay_seconds,
             self.tags_json(),
             self.unique,
+            self.network_type,
         )
         return self
 
@@ -370,6 +385,7 @@ class WorkChain:
                 "argument": step.argument_json(),
                 "delay_seconds": step.delay_seconds,
                 "network_required": bool(step.network_required),
+                "network_type": step.network_type,
                 "charging_required": bool(step.charging_required),
                 "backoff_policy": step.backoff_policy,
                 "backoff_delay_seconds": step.backoff_delay_seconds,

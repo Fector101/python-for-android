@@ -23,6 +23,7 @@ from work_manager import (
 
 class WorkManagerTestApp(App):
     POLICIES = ("keep", "replace", "append", "append_or_replace", "update")
+    NETWORK_TYPES = ("connected", "unmetered", "not_roaming", "not_required")
 
     def build(self):
         self.work_name = "heartbeat_once"
@@ -30,6 +31,7 @@ class WorkManagerTestApp(App):
         self.policy = "replace"
         self.backoff_policy = "exponential"
         self.tag = "demo_tag"
+        self.network_type = "connected"
 
         root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
@@ -62,6 +64,15 @@ class WorkManagerTestApp(App):
         unique_row.add_widget(self.unique_cb)
         unique_row.add_widget(Label(text="non-unique", size_hint_x=0.65))
         root.add_widget(unique_row)
+
+        network_type_row = BoxLayout(
+            orientation="horizontal", size_hint_y=None, height=44)
+        network_type_row.add_widget(
+            Label(text="Network type:", size_hint_x=0.35))
+        self.network_type_button = Button(text=self.network_type)
+        self.network_type_button.bind(on_press=self.toggle_network_type)
+        network_type_row.add_widget(self.network_type_button)
+        root.add_widget(network_type_row)
 
         policy_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
         policy_row.add_widget(Label(text="Policy:", size_hint_x=0.35))
@@ -150,6 +161,12 @@ class WorkManagerTestApp(App):
         self.policy = self.POLICIES[(index + 1) % len(self.POLICIES)]
         self.policy_button.text = self.policy
 
+    def toggle_network_type(self, _=None, touch=None):
+        index = self.NETWORK_TYPES.index(self.network_type)
+        self.network_type = self.NETWORK_TYPES[
+            (index + 1) % len(self.NETWORK_TYPES)]
+        self.network_type_button.text = self.network_type
+
     def toggle_backoff(self, _=None, touch=None):
         self.backoff_policy = (
             "linear" if self.backoff_policy == "exponential" else "exponential"
@@ -193,6 +210,7 @@ class WorkManagerTestApp(App):
         charging = getattr(self, "charging_cb", None)
         return {
             "network_required": bool(network and network.activated),
+            "network_type": self.network_type,
             "charging_required": bool(charging and charging.activated),
         }
 
