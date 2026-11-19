@@ -87,7 +87,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Cancel work", self.cancel_work))
         root.add_widget(self._button("Cancel by tag", self.cancel_by_tag_work))
         root.add_widget(self._button("Cancel all", self.cancel_all_work))
-        root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
+        root.add_widget(self._button("Refresh status", lambda _,__: self.refresh_status()))
 
         self.status = Label(
             text="Status: (not queried)",
