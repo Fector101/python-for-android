@@ -48,8 +48,16 @@ public abstract class PythonWorker extends RemoteListenableWorker {
      */
     public static Context mWorkerContext = null;
 
+    /** Worker whose Python script is currently running. */
+    private static PythonWorker mCurrentWorker = null;
+
     public static Context getWorkerContext() {
         return mWorkerContext;
+    }
+
+    /** Used by android_notify.config.get_python_worker(). */
+    public static PythonWorker getCurrentWorker() {
+        return mCurrentWorker;
     }
 
     /** WorkRequest Data key for the string passed as PYTHON_SERVICE_ARGUMENT. */
@@ -241,9 +249,14 @@ public abstract class PythonWorker extends RemoteListenableWorker {
             Thread pythonThread = new Thread(() -> {
                 int result;
                 synchronized (PYTHON_LOCK) {
-                    result = nativeStart(
-                            androidPrivate, androidArgument, script,
-                            pythonName, pythonHome, pythonPath, serviceArg);
+                    mCurrentWorker = PythonWorker.this;
+                    try {
+                        result = nativeStart(
+                                androidPrivate, androidArgument, script,
+                                pythonName, pythonHome, pythonPath, serviceArg);
+                    } finally {
+                        mCurrentWorker = null;
+                    }
                 }
                 Log.i(TAG, "Finished remote python work: " + result);
                 String retryJson = readText(retryFile);
@@ -266,6 +279,30 @@ public abstract class PythonWorker extends RemoteListenableWorker {
 
             return TAG + " python thread";
         });
+    }
+
+    /**
+     * Python-facing equivalent of Service.startForeground().
+     *
+     * The notification is built by python/android_notify, exactly like the
+     * regular service pattern. The third argument is passed through as the
+     * ForegroundInfo service type so API 34+ does not reject it as "none".
+     */
+    public void startForeground(
+            int id, Notification notification, int foregroundServiceType) {
+        if (notification == null) {
+            throw new IllegalArgumentException("notification must not be null");
+        }
+        final ListenableFuture<Void> future = setForegroundAsync(
+                new ForegroundInfo(id, notification, foregroundServiceType));
+        future.addListener(() -> {
+            try {
+                future.get();
+                Log.i(TAG, "Foreground promotion applied");
+            } catch (Exception e) {
+                Log.w(TAG, "setForegroundAsync failed", e);
+            }
+        }, Runnable::run);
     }
 
     // Native part

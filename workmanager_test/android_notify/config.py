@@ -177,6 +177,29 @@ def get_python_service():
     return _python_service
 
 
+def get_python_worker():
+    """Active p4a WorkManager worker, analogous to get_python_service().
+
+    Unlike the service accessor this is not cached: the remote worker process
+    can run more than one script serially, so always ask Java for the worker
+    currently holding the CPython lock.
+    """
+    if not on_android_platform():
+        from .internal.facade import PythonActivity
+        logger.warning("Can't get python worker, Not on Android.")
+        return PythonActivity
+
+    _, autoclass = _get_jnius()
+    PythonWorker = autoclass("org.kivy.android.PythonWorker")
+    worker = PythonWorker.getCurrentWorker()
+    if worker is None:
+        raise RuntimeError(
+            "No active PythonWorker. The p4a getCurrentWorker/startForeground "
+            "patch is required for foreground promotion from workers."
+        )
+    return worker
+
+
 def get_python_worker_context():
     """Android Context published by the p4a PythonWorker base class.
 

@@ -127,6 +127,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
+        root.add_widget(self._button("Schedule foreground (25s)", self.schedule_foreground))
         root.add_widget(self._button("Schedule expedited (no delay, 5s run)", self.schedule_expedited))
         root.add_widget(self._button("Schedule chain (2 steps, 8s each)", self.schedule_chain))
         root.add_widget(self._button("Schedule tagged work (10s)", self.schedule_tagged))
@@ -412,6 +413,28 @@ class WorkManagerTestApp(App):
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
 
+    def schedule_foreground(self, _=None, touch=None):
+        constraints = self.constraints
+        try:
+            Work(
+                name="foreground_once",
+                script="workers/foreground.py",
+                args={
+                    "title": "Foreground demo",
+                    "text": "Working for 25s",
+                    "sleep_seconds": 25,
+                },
+                delay_seconds=2,
+                policy="replace",
+                unique=self.is_unique,
+                **constraints,
+                **self.expedited_options,
+            ).schedule()
+            self._note("Scheduled foreground worker: foreground_once")
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
     def schedule_chain(self, _=None, touch=None):
         try:
             Work(
@@ -528,6 +551,7 @@ class WorkManagerTestApp(App):
             for key, work_name, work_unique in (
                     ("one_time", name, unique),
                     ("periodic", "heartbeat_periodic", unique),
+                    ("foreground", "foreground_once", unique),
                     ("expedited", "expedited_once", unique),
                     ("chain", "chain_once", True)):
                 try:
@@ -552,18 +576,19 @@ class WorkManagerTestApp(App):
                 break
         if latest is None:
             return
-        for key in ("one_time", "periodic", "expedited", "chain", "tag"):
+        for key in ("one_time", "periodic", "foreground", "expedited", "chain", "tag"):
             value = latest.get(key)
             if isinstance(value, Exception):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
         self.status.text = (
-            "Status: {} ({}): {}\nPeriodic: {}\nExpedited: {}\n"
+            "Status: {} ({}): {}\nPeriodic: {}\nForeground: {}\nExpedited: {}\n"
             "Chain: {}\nTag {}: {}".format(
                 latest.get("name", self.current_name),
                 latest.get("mode", "unique"),
                 self._format_info(latest.get("one_time")),
                 self._format_info(latest.get("periodic")),
+                self._format_info(latest.get("foreground")),
                 self._format_info(latest.get("expedited")),
                 self._format_info(latest.get("chain")),
                 latest.get("tag_name", self.current_tag),
