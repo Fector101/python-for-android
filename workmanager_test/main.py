@@ -1,5 +1,8 @@
 """Minimal Kivy app for exercising the p4a WorkManager patch."""
 
+import queue
+import threading
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
@@ -75,7 +78,19 @@ class WorkManagerTestApp(App):
         self.log.bind(size=self.log.setter("text_size"))
         root.add_widget(self.log)
 
-        Clock.schedule_interval(lambda dt: self.refresh_status(), 1)
+        # WorkInfo queries use a bounded JNI Future.get(); keep them off the
+        # Kivy main thread and only touch widgets when draining the queue.
+        self._status_queue = queue.Queue()
+        self._poll_now = threading.Event()
+        self._stop_polling = threading.Event()
+        self._poll_name = self.current_name
+        self._poll_thread = threading.Thread(
+            target=self._poll_worker,
+            name="work-status-poll",
+            daemon=True,
+        )
+        self._poll_thread.start()
+        Clock.schedule_interval(lambda dt: self._drain_status(), 0.25)
         return root
 
     @staticmethod
@@ -219,21 +234,53 @@ class WorkManagerTestApp(App):
         return " ".join(parts)
 
     def refresh_status(self):
-        try:
-            one_time = get_work_info(self.current_name)
-        except Exception as exc:
-            one_time = None
-            self._note("Status query failed: {!r}".format(exc))
-        try:
-            periodic = get_work_info("heartbeat_periodic")
-        except Exception as exc:
-            periodic = None
-            self._note("Status query failed: {!r}".format(exc))
+        """Ask the polling thread for an update; never blocks the UI thread."""
+        self._poll_name = self.current_name
+        self._poll_now.set()
+
+    def _poll_worker(self):
+        while not self._stop_polling.is_set():
+            self._poll_now.wait(1.0)
+            self._poll_now.clear()
+            if self._stop_polling.is_set():
+                break
+            name = self._poll_name
+            result = {"name": name}
+            for key, work_name in (("one_time", name),
+                                   ("periodic", "heartbeat_periodic")):
+                try:
+                    result[key] = get_work_info(work_name)
+                except Exception as exc:
+                    # A failed query must not kill the polling thread.
+                    result[key] = exc
+            self._status_queue.put(result)
+
+    def _drain_status(self, dt=None):
+        self._poll_name = self.current_name
+        latest = None
+        while True:
+            try:
+                latest = self._status_queue.get_nowait()
+            except queue.Empty:
+                break
+        if latest is None:
+            return
+        for key in ("one_time", "periodic"):
+            value = latest.get(key)
+            if isinstance(value, Exception):
+                self._note("Status query failed: {!r}".format(value))
+                latest[key] = None
         self.status.text = "Status: {}: {}\nPeriodic: {}".format(
-            self.current_name,
-            self._format_info(one_time),
-            self._format_info(periodic),
+            latest.get("name", self.current_name),
+            self._format_info(latest.get("one_time")),
+            self._format_info(latest.get("periodic")),
         )
+
+    def on_stop(self):
+        self._stop_polling.set()
+        self._poll_now.set()
+        if getattr(self, "_poll_thread", None) is not None:
+            self._poll_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
