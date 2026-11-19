@@ -76,7 +76,7 @@ def test_one_time_schedule_arguments(java):
     assert work.schedule() is work
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique, network_type) = calls["schedule"]
+     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -92,6 +92,9 @@ def test_one_time_schedule_arguments(java):
     assert tags_json == "[]"
     assert unique is True
     assert network_type == "connected"
+    assert battery_not_low is False
+    assert storage_not_low is False
+    assert device_idle is False
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -221,7 +224,7 @@ def test_one_time_schedule_passes_constraints(java):
 
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique, network_type) = calls["schedule"]
+     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
@@ -229,6 +232,9 @@ def test_one_time_schedule_passes_constraints(java):
     assert charging is True
     assert unique is True
     assert network_type == "connected"
+    assert battery_not_low is False
+    assert storage_not_low is False
+    assert device_idle is False
 
 
 @pytest.mark.parametrize("network_type", [
@@ -281,6 +287,69 @@ def test_network_type_reaches_chain_step_json(java):
     assert steps[0]["network_required"] is True
     assert steps[1]["network_type"] == "unmetered"
     assert steps[1]["network_required"] is False
+
+
+@pytest.mark.parametrize("field,index", [
+    ("battery_not_low", 15),
+    ("storage_not_low", 16),
+    ("device_idle", 17),
+])
+def test_device_constraint_reaches_java(java, field, index):
+    _, calls = java
+    work_manager.Work(
+        name="device_constraint", script="workers/heartbeat.py",
+        **{field: True},
+    ).schedule()
+
+    args = calls["schedule"]
+    assert args[index] is True
+    for other in ("battery_not_low", "storage_not_low", "device_idle"):
+        if other != field:
+            assert args[{"battery_not_low": 15, "storage_not_low": 16,
+                         "device_idle": 17}[other]] is False
+
+
+def test_all_device_constraints_reach_java(java):
+    _, calls = java
+    work = work_manager.Work(
+        name="all_device_constraints", script="workers/heartbeat.py",
+        battery_not_low=True, storage_not_low=True, device_idle=True,
+    )
+    assert work.battery_not_low is True
+    assert work.storage_not_low is True
+    assert work.device_idle is True
+    work.schedule()
+
+    assert calls["schedule"][15:18] == (True, True, True)
+
+
+@pytest.mark.parametrize("value", [1, "yes", ["x"], object()])
+def test_device_constraints_coerce_to_bool(java, value):
+    _, calls = java
+    work_manager.Work(
+        name="coerced_constraints", script="workers/heartbeat.py",
+        battery_not_low=value, storage_not_low=value, device_idle=value,
+    ).schedule()
+    assert calls["schedule"][15:18] == (True, True, True)
+
+
+def test_device_constraints_reach_chain_step_json(java):
+    _, calls = java
+    work_manager.Work(
+        name="chain_device", script="workers/chain.py",
+        battery_not_low=True,
+    ).then(work_manager.Work(
+        name="step2", script="workers/chain.py",
+        storage_not_low=True, device_idle=True,
+    )).schedule()
+
+    steps = json.loads(calls["scheduleChain"][3])
+    assert steps[0]["battery_not_low"] is True
+    assert steps[0]["storage_not_low"] is False
+    assert steps[0]["device_idle"] is False
+    assert steps[1]["battery_not_low"] is False
+    assert steps[1]["storage_not_low"] is True
+    assert steps[1]["device_idle"] is True
 
 
 def test_custom_worker_name(java):
@@ -616,6 +685,9 @@ def test_chain_steps_json_carries_per_step_options(java):
         "network_required": True,
         "network_type": "connected",
         "charging_required": False,
+        "battery_not_low": False,
+        "storage_not_low": False,
+        "device_idle": False,
         "backoff_policy": "linear",
         "backoff_delay_seconds": 12,
         "tags": [],

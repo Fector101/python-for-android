@@ -57,6 +57,19 @@ class WorkManagerTestApp(App):
         constraint_row.add_widget(Label(text="charging", size_hint_x=0.25))
         root.add_widget(constraint_row)
 
+        device_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        device_row.add_widget(Label(text="Device:", size_hint_x=0.35))
+        self.battery_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        device_row.add_widget(self.battery_cb)
+        device_row.add_widget(Label(text="battery", size_hint_x=0.25))
+        self.storage_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        device_row.add_widget(self.storage_cb)
+        device_row.add_widget(Label(text="storage", size_hint_x=0.25))
+        self.idle_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        device_row.add_widget(self.idle_cb)
+        device_row.add_widget(Label(text="idle", size_hint_x=0.25))
+        root.add_widget(device_row)
+
         unique_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
         unique_row.add_widget(Label(text="Scheduling:", size_hint_x=0.35))
         self.unique_cb = CheckBox(activated=False, size_hint_x=None, width=44)
@@ -208,10 +221,16 @@ class WorkManagerTestApp(App):
     def constraints(self):
         network = getattr(self, "network_cb", None)
         charging = getattr(self, "charging_cb", None)
+        battery = getattr(self, "battery_cb", None)
+        storage = getattr(self, "storage_cb", None)
+        idle = getattr(self, "idle_cb", None)
         return {
             "network_required": bool(network and network.activated),
             "network_type": self.network_type,
             "charging_required": bool(charging and charging.activated),
+            "battery_not_low": bool(battery and battery.activated),
+            "storage_not_low": bool(storage and storage.activated),
+            "device_idle": bool(idle and idle.activated),
         }
 
     @staticmethod
@@ -221,6 +240,12 @@ class WorkManagerTestApp(App):
             parts.append("network")
         if constraints["charging_required"]:
             parts.append("charging")
+        if constraints["battery_not_low"]:
+            parts.append("battery")
+        if constraints["storage_not_low"]:
+            parts.append("storage")
+        if constraints["device_idle"]:
+            parts.append("idle")
         return "requires " + "+".join(parts) if parts else "no constraints"
 
     def _note(self, text):

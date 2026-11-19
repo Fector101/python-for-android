@@ -81,6 +81,14 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         return buildConstraints(networkRequired, chargingRequired, "connected");
     }
 
+    private static Constraints buildConstraints(
+            boolean networkRequired,
+            boolean chargingRequired,
+            String networkType) {
+        return buildConstraints(networkRequired, chargingRequired, networkType,
+                false, false, false);
+    }
+
     /** Map Python's network type names, falling back to CONNECTED. */
     private static NetworkType parseNetworkType(String networkType) {
         if ("unmetered".equalsIgnoreCase(networkType)) {
@@ -98,13 +106,25 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
     private static Constraints buildConstraints(
             boolean networkRequired,
             boolean chargingRequired,
-            String networkType) {
+            String networkType,
+            boolean batteryNotLow,
+            boolean storageNotLow,
+            boolean deviceIdle) {
         Constraints.Builder builder = new Constraints.Builder();
         if (networkRequired) {
             builder.setRequiredNetworkType(parseNetworkType(networkType));
         }
         if (chargingRequired) {
             builder.setRequiresCharging(true);
+        }
+        if (batteryNotLow) {
+            builder.setRequiresBatteryNotLow(true);
+        }
+        if (storageNotLow) {
+            builder.setRequiresStorageNotLow(true);
+        }
+        if (deviceIdle) {
+            builder.setRequiresDeviceIdle(true);
         }
         return builder.build();
     }
@@ -215,6 +235,29 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 "connected");
     }
 
+    /** Schedule work with a specific network type constraint. */
+    public static void schedule(
+            Context context,
+            String uniqueName,
+            String script,
+            String serviceArgument,
+            boolean periodic,
+            long delaySeconds,
+            long intervalMinutes,
+            boolean networkRequired,
+            boolean chargingRequired,
+            String policy,
+            String backoffPolicy,
+            long backoffDelaySeconds,
+            String tagsJson,
+            boolean unique,
+            String networkType) {
+        schedule(context, uniqueName, script, serviceArgument, periodic,
+                delaySeconds, intervalMinutes, networkRequired, chargingRequired,
+                policy, backoffPolicy, backoffDelaySeconds, tagsJson, unique,
+                networkType, false, false, false);
+    }
+
     /**
      * Schedule work, optionally without a unique name.
      *
@@ -236,10 +279,14 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             long backoffDelaySeconds,
             String tagsJson,
             boolean unique,
-            String networkType) {
+            String networkType,
+            boolean batteryNotLow,
+            boolean storageNotLow,
+            boolean deviceIdle) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(
-                networkRequired, chargingRequired, networkType);
+                networkRequired, chargingRequired, networkType,
+                batteryNotLow, storageNotLow, deviceIdle);
         BackoffPolicy backoff = parseBackoff(backoffPolicy);
         long backoffMillis = backoffMillis(backoffDelaySeconds);
         WorkManager manager = WorkManager.getInstance(context);
@@ -251,9 +298,12 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 PeriodicWorkRequest.Builder builder = new PeriodicWorkRequest.Builder(
                         {{ name|capitalize }}Worker.class, minutes, TimeUnit.MINUTES)
                         .setInputData(data)
-                        .setConstraints(constraints)
-                        .setBackoffCriteria(
-                                backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                        .setConstraints(constraints);
+                // WorkManager rejects backoff criteria on idle-mode jobs.
+                if (!deviceIdle) {
+                    builder.setBackoffCriteria(
+                            backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                }
                 addTags(builder, tags);
                 if (unique) {
                     manager.enqueueUniquePeriodicWork(
@@ -267,9 +317,11 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
                         {{ name|capitalize }}Worker.class)
                         .setInputData(data)
-                        .setConstraints(constraints)
-                        .setBackoffCriteria(
-                                backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                        .setConstraints(constraints);
+                if (!deviceIdle) {
+                    builder.setBackoffCriteria(
+                            backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                }
                 addTags(builder, tags);
                 if (delaySeconds > 0) {
                     builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
@@ -319,11 +371,17 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                         .setConstraints(buildConstraints(
                                 step.optBoolean("network_required", false),
                                 step.optBoolean("charging_required", false),
-                                step.optString("network_type", "connected")))
-                        .setBackoffCriteria(
-                                parseBackoff(step.optString("backoff_policy", "")),
-                                backoffMillis(step.optLong("backoff_delay_seconds", 30)),
-                                TimeUnit.MILLISECONDS);
+                                step.optString("network_type", "connected"),
+                                step.optBoolean("battery_not_low", false),
+                                step.optBoolean("storage_not_low", false),
+                                step.optBoolean("device_idle", false)));
+                if (!step.optBoolean("device_idle", false)) {
+                    builder.setBackoffCriteria(
+                            parseBackoff(step.optString("backoff_policy", "")),
+                            backoffMillis(step.optLong(
+                                    "backoff_delay_seconds", 30)),
+                            TimeUnit.MILLISECONDS);
+                }
                 addTags(builder, step.optJSONArray("tags"));
                 long delay = step.optLong("delay_seconds", 0);
                 if (delay > 0) {

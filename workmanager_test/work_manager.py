@@ -160,6 +160,10 @@ class Work:
             ``"not_roaming"`` or ``"not_required"``. Only used when
             ``network_required`` is true. Values are case-insensitive.
         charging_required: Require the device to be charging.
+        battery_not_low: Require the battery to be above WorkManager's low
+            threshold (about 15%).
+        storage_not_low: Require free storage above WorkManager's low threshold.
+        device_idle: Require the device to be in Doze / idle mode.
         policy: What to do when ``name`` already exists. One-time work accepts
             ``"keep"`` (default), ``"replace"``, ``"append"`` and
             ``"append_or_replace"``; periodic work accepts ``"keep"``,
@@ -186,6 +190,9 @@ class Work:
     network_required: bool = False
     network_type: str = "connected"
     charging_required: bool = False
+    battery_not_low: bool = False
+    storage_not_low: bool = False
+    device_idle: bool = False
     policy: str = "keep"
     backoff_policy: str = "exponential"
     backoff_delay_seconds: int = 30
@@ -207,6 +214,9 @@ class Work:
                 "network_type must be one of 'connected', 'unmetered', "
                 "'not_roaming' or 'not_required'"
             )
+        self.battery_not_low = bool(self.battery_not_low)
+        self.storage_not_low = bool(self.storage_not_low)
+        self.device_idle = bool(self.device_idle)
         self.delay_seconds = int(self.delay_seconds)
         if self.delay_seconds < 0:
             raise ValueError("delay_seconds must be >= 0")
@@ -299,6 +309,9 @@ class Work:
             self.tags_json(),
             self.unique,
             self.network_type,
+            self.battery_not_low,
+            self.storage_not_low,
+            self.device_idle,
         )
         return self
 
@@ -387,6 +400,9 @@ class WorkChain:
                 "network_required": bool(step.network_required),
                 "network_type": step.network_type,
                 "charging_required": bool(step.charging_required),
+                "battery_not_low": bool(step.battery_not_low),
+                "storage_not_low": bool(step.storage_not_low),
+                "device_idle": bool(step.device_idle),
                 "backoff_policy": step.backoff_policy,
                 "backoff_delay_seconds": step.backoff_delay_seconds,
                 "tags": list(step.tags),
