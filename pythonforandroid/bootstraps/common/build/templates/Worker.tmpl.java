@@ -94,6 +94,31 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 : BackoffPolicy.EXPONENTIAL;
     }
 
+    /** Map Python's one-time policy names, falling back to KEEP. */
+    private static ExistingWorkPolicy parseOneTimePolicy(String policy) {
+        if ("replace".equalsIgnoreCase(policy)) {
+            return ExistingWorkPolicy.REPLACE;
+        }
+        if ("append".equalsIgnoreCase(policy)) {
+            return ExistingWorkPolicy.APPEND;
+        }
+        if ("append_or_replace".equalsIgnoreCase(policy)) {
+            return ExistingWorkPolicy.APPEND_OR_REPLACE;
+        }
+        return ExistingWorkPolicy.KEEP;
+    }
+
+    /** Map Python's periodic policy names, falling back to KEEP. */
+    private static ExistingPeriodicWorkPolicy parsePeriodicPolicy(String policy) {
+        if ("replace".equalsIgnoreCase(policy)) {
+            return ExistingPeriodicWorkPolicy.REPLACE;
+        }
+        if ("update".equalsIgnoreCase(policy)) {
+            return ExistingPeriodicWorkPolicy.UPDATE;
+        }
+        return ExistingPeriodicWorkPolicy.KEEP;
+    }
+
     private static long backoffMillis(long seconds) {
         // WorkRequest.MIN_BACKOFF_MILLIS is 10 s and MAX_BACKOFF_MILLIS is 24 h;
         // clamp here so a bad value can never crash the app from jnius.
@@ -167,7 +192,6 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         BackoffPolicy backoff = parseBackoff(backoffPolicy);
         long backoffMillis = backoffMillis(backoffDelaySeconds);
         WorkManager manager = WorkManager.getInstance(context);
-        boolean replace = "replace".equalsIgnoreCase(policy);
 
         try {
             JSONArray tags = new JSONArray(tagsJson);
@@ -180,11 +204,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                         .setBackoffCriteria(
                                 backoff, backoffMillis, TimeUnit.MILLISECONDS);
                 addTags(builder, tags);
-                ExistingPeriodicWorkPolicy periodicPolicy = replace
-                        ? ExistingPeriodicWorkPolicy.REPLACE
-                        : ExistingPeriodicWorkPolicy.KEEP;
                 manager.enqueueUniquePeriodicWork(
-                        uniqueName, periodicPolicy, builder.build());
+                        uniqueName, parsePeriodicPolicy(policy), builder.build());
             } else {
                 OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
                         {{ name|capitalize }}Worker.class)
@@ -196,10 +217,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 if (delaySeconds > 0) {
                     builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
                 }
-                ExistingWorkPolicy workPolicy = replace
-                        ? ExistingWorkPolicy.REPLACE
-                        : ExistingWorkPolicy.KEEP;
-                manager.enqueueUniqueWork(uniqueName, workPolicy, builder.build());
+                manager.enqueueUniqueWork(
+                        uniqueName, parseOneTimePolicy(policy), builder.build());
             }
         } catch (JSONException e) {
             Log.e(TAG, "Invalid work tags", e);
@@ -225,9 +244,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 return;
             }
             WorkManager manager = WorkManager.getInstance(context);
-            ExistingWorkPolicy workPolicy = "replace".equalsIgnoreCase(policy)
-                    ? ExistingWorkPolicy.REPLACE
-                    : ExistingWorkPolicy.KEEP;
+            ExistingWorkPolicy workPolicy = parseOneTimePolicy(policy);
             WorkContinuation continuation = null;
             for (int i = 0; i < steps.length(); i++) {
                 JSONObject step = steps.getJSONObject(i);

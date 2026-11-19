@@ -22,6 +22,8 @@ from work_manager import (
 
 
 class WorkManagerTestApp(App):
+    POLICIES = ("keep", "replace", "append", "append_or_replace", "update")
+
     def build(self):
         self.work_name = "heartbeat_once"
         self.message = "hello from WorkManager"
@@ -131,7 +133,12 @@ class WorkManagerTestApp(App):
         return button
 
     def toggle_policy(self, _=None, touch=None):
-        self.policy = "keep" if self.policy == "replace" else "replace"
+        # One control serves both one-time and periodic buttons; an invalid
+        # pairing (e.g. update on one-time work) is reported by Work's
+        # validation in the log area rather than silently coerced here.
+        index = (self.POLICIES.index(self.policy)
+                 if self.policy in self.POLICIES else -1)
+        self.policy = self.POLICIES[(index + 1) % len(self.POLICIES)]
         self.policy_button.text = self.policy
 
     def toggle_backoff(self, _=None, touch=None):

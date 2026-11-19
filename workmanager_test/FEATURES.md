@@ -25,13 +25,13 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
 | Retry + backoff | `21fd650e` | `work_result.request_retry()` writes `retry.json`; Java maps it to `Result.retry()` (takes precedence over the exit status). `Work(backoff_policy, backoff_delay_seconds)` maps to `setBackoffCriteria()` with Python validation and Java clamping to WorkManager's 10 s .. 24 h range. `work_result.attempt()` keeps a counter that survives retries. Device: Java logged `Worker requested retry`, work re-enqueued with `nextScheduleTimeMillis` ~10 s later, `run_attempt_count` went 1 → 2. MIUI `proc frequent died!` / `process is bad` then blocked the next worker process launch, so the final attempt was not observed — the known platform throttle, not an app bug. |
 | Chaining (`beginUniqueWork().then()`) | `3f4d6907` | `Work(...).then(Work(...))` builds a `WorkChain` (2..10 one-time steps, same worker class, no periodic steps). Java `scheduleChain()` takes a JSON array of per-step settings and applies `beginUniqueWork(name, policy, first).then(rest).enqueue()`, so name/policy/cancel/status apply to the whole chain. Device: step 2 stayed `BLOCKED` while step 1 ran (`CHAIN_MARKER step=1` at 20:59:55Z), then ran and both rows finished `SUCCEEDED` (step 2 output at 21:00:04Z); per-step outputs readable in `get_work_infos()`. |
 | Custom tags / query by tag | `e11a229c` | `Work(tags=[...])` adds custom tags to one-time, periodic and chain-step requests (JSON array string to Java `addTag()`); 1..10 tags of ≤100 chars, validated in Python. `get_work_infos_by_tag()` wraps `getWorkInfosByTag()` in the existing `WorkInfos` dataclasses, and `cancel_by_tag()` wraps `cancelAllWorkByTag()`. Device: two works sharing `tag_demo` were both returned by the tag query with `tags=['io.github.fector101.workmanagertest.ScriptWorker', 'tag_demo']` (WorkManager's auto class tag is additive), both finished `SUCCEEDED`; `cancel_by_tag('tag_cancel')` moved a third work to `CANCELLED`. |
+| More existing-work policies | pending | One-time `policy` now accepts `keep`, `replace`, `append` and `append_or_replace`; periodic accepts `keep`, `replace` and `update` (WorkManager 2.9.0). Java `parseOneTimePolicy()` / `parsePeriodicPolicy()` map the strings and fall back to KEEP; `scheduleChain()` uses the one-time parser too. `WorkChain.policy` accepts the four one-time values. Values are case-insensitive; invalid one-time/periodic pairings are rejected in Python. UI policy button cycles all five values (an invalid pairing is reported in the log area). Device: `append` under one name produced two distinct IDs, one `BLOCKED` while the other ran, then both `SUCCEEDED`; `update` on a periodic request kept the same ID with one row; `append_or_replace` accepted a re-schedule after the original finished. |
 
 ## Missing
 
 | Feature | State | Notes |
 |---|---|---|
 | Non-unique work (`enqueue`) | Missing | Every schedule call uses `enqueueUniqueWork` / `enqueueUniquePeriodicWork`. |
-| More existing-work policies | Missing | `APPEND`, `APPEND_OR_REPLACE`, `UPDATE` (periodic) are not exposed. |
 | Network types beyond CONNECTED | Missing | `UNMETERED`, `NOT_ROAMING`, `NOT_REQUIRED` are not exposed. |
 | Battery / storage / idle constraints | Missing | `requiresBatteryNotLow`, `requiresStorageNotLow`, `requiresDeviceIdle` are not exposed. |
 | Expedited work / foreground long-running | Missing | No `setExpedited()` or foreground service type support. |
@@ -68,10 +68,14 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
   the device clears the flag.
 - MIUI also requires a manual tap in the install confirmation dialog; plain
   `adb install` fails with `INSTALL_FAILED_USER_RESTRICTED` until approved.
+- `append` on a unique name whose last work is already in a terminal state
+  throws `IllegalStateException` from WorkManager; use `append_or_replace` for
+  re-scheduling after a chain finishes. The UI shows the failure in its log
+  area rather than crashing.
 
 ## Suggested order for the next features
 
-1. Non-unique `enqueue`, extra existing-work policies, extra network types and
-   battery/storage/idle constraints.
+1. Non-unique `enqueue`, extra network types and battery/storage/idle
+   constraints.
 2. Expedited work / foreground long-running work.
 3. Data propagation between chained steps (parent output into child input).

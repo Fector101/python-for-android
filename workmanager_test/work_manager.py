@@ -156,7 +156,10 @@ class Work:
             WorkManager enforces a 15-minute minimum.
         network_required: Require a connected network.
         charging_required: Require the device to be charging.
-        policy: ``"keep"`` or ``"replace"`` for an existing unique work name.
+        policy: What to do when ``name`` already exists. One-time work accepts
+            ``"keep"`` (default), ``"replace"``, ``"append"`` and
+            ``"append_or_replace"``; periodic work accepts ``"keep"``,
+            ``"replace"`` and ``"update"``.
         backoff_policy: ``"exponential"`` (WorkManager default) or ``"linear"``
             for retries requested by the worker via ``work_result.request_retry``.
         backoff_delay_seconds: Initial retry delay, clamped by WorkManager to
@@ -194,9 +197,21 @@ class Work:
                 raise ValueError(
                     "WorkManager periodic work requires interval_minutes >= 15"
                 )
+        if not isinstance(self.policy, str):
+            raise ValueError("policy must be a string")
         self.policy = self.policy.lower()
-        if self.policy not in ("keep", "replace"):
-            raise ValueError("policy must be 'keep' or 'replace'")
+        allowed = (
+            ("keep", "replace", "update")
+            if self.is_periodic
+            else ("keep", "replace", "append", "append_or_replace")
+        )
+        if self.policy not in allowed:
+            raise ValueError(
+                "policy must be one of {} for {} work".format(
+                    ", ".join(repr(value) for value in allowed),
+                    "periodic" if self.is_periodic else "one-time",
+                )
+            )
         self.backoff_policy = self.backoff_policy.lower()
         if self.backoff_policy not in ("exponential", "linear"):
             raise ValueError(
@@ -292,7 +307,8 @@ class WorkChain:
 
     Build one with ``Work(...).then(Work(...))``. Steps run in order, each one
     starting only after the previous one succeeds; a failed or retried step
-    blocks the rest of the chain.
+    blocks the rest of the chain. ``policy`` uses the one-time values:
+    ``keep``, ``replace``, ``append`` or ``append_or_replace``.
     """
 
     name: str
@@ -302,9 +318,14 @@ class WorkChain:
 
     def __post_init__(self) -> None:
         _validate_name(self.name)
+        if not isinstance(self.policy, str):
+            raise ValueError("policy must be a string")
         self.policy = self.policy.lower()
-        if self.policy not in ("keep", "replace"):
-            raise ValueError("policy must be 'keep' or 'replace'")
+        if self.policy not in ("keep", "replace", "append", "append_or_replace"):
+            raise ValueError(
+                "policy must be one of 'keep', 'replace', 'append' or "
+                "'append_or_replace'"
+            )
         self.worker_name = _validate_worker_name(self.worker_name)
         if len(self.steps) < 2:
             raise ValueError("a work chain needs at least two steps")

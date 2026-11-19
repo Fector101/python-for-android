@@ -106,6 +106,56 @@ def test_explicit_keep_policy_reaches_java(java):
     assert calls["schedule"][9] == "keep"
 
 
+@pytest.mark.parametrize("policy", [
+    "keep", "replace", "append", "append_or_replace",
+    "APPEND", "APPEND_OR_REPLACE",
+])
+def test_one_time_policies_reach_java(java, policy):
+    _, calls = java
+    work_manager.Work(
+        name="policy_once",
+        script="workers/heartbeat.py",
+        policy=policy,
+    ).schedule()
+
+    assert calls["schedule"][9] == policy.lower()
+
+
+@pytest.mark.parametrize("policy", ["keep", "replace", "update", "UPDATE"])
+def test_periodic_policies_reach_java(java, policy):
+    _, calls = java
+    work_manager.Work(
+        name="policy_periodic",
+        script="workers/heartbeat.py",
+        interval_minutes=15,
+        policy=policy,
+    ).schedule()
+
+    assert calls["schedule"][4] is True
+    assert calls["schedule"][9] == policy.lower()
+
+
+@pytest.mark.parametrize("policy", ["update", "bogus", "", 42])
+def test_invalid_one_time_policy(policy):
+    with pytest.raises(ValueError, match="policy"):
+        work_manager.Work(
+            name="bad_policy",
+            script="workers/heartbeat.py",
+            policy=policy,
+        )
+
+
+@pytest.mark.parametrize("policy", ["append", "append_or_replace", "bogus", 42])
+def test_invalid_periodic_policy(policy):
+    with pytest.raises(ValueError, match="policy"):
+        work_manager.Work(
+            name="bad_policy",
+            script="workers/heartbeat.py",
+            interval_minutes=15,
+            policy=policy,
+        )
+
+
 def test_explicit_backoff_reaches_java(java):
     _, calls = java
     work_manager.Work(
@@ -573,6 +623,28 @@ def test_chain_validates_name_and_policy():
         work_manager.WorkChain(name="bad name!", steps=steps)
     with pytest.raises(ValueError, match="policy"):
         work_manager.WorkChain(name="chain_bad", steps=steps, policy="bad")
+
+
+@pytest.mark.parametrize("policy", [
+    "keep", "replace", "append", "append_or_replace", "APPEND_OR_REPLACE",
+])
+def test_chain_policies_reach_java(java, policy):
+    _, calls = java
+    work_manager.Work(
+        name="chain_policy", script="workers/chain.py", policy=policy,
+    ).then(work_manager.Work(name="s2", script="workers/chain.py")).schedule()
+
+    assert calls["scheduleChain"][2] == policy.lower()
+
+
+@pytest.mark.parametrize("policy", ["update", "bogus", 42])
+def test_chain_rejects_non_one_time_policy(policy):
+    steps = [
+        work_manager.Work(name="s1", script="workers/chain.py"),
+        work_manager.Work(name="s2", script="workers/chain.py"),
+    ]
+    with pytest.raises(ValueError, match="policy"):
+        work_manager.WorkChain(name="chain_bad", steps=steps, policy=policy)
 
 
 def test_chain_cancel_and_status_use_chain_name(java):
