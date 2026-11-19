@@ -150,7 +150,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String policy) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, "exponential", 30, "[]");
+                policy, "exponential", 30, "[]", true);
     }
 
     /** Schedule work with explicit retry backoff criteria. */
@@ -169,7 +169,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             long backoffDelaySeconds) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, backoffPolicy, backoffDelaySeconds, "[]");
+                policy, backoffPolicy, backoffDelaySeconds, "[]", true);
     }
 
     /** Schedule work with custom tags as a JSON array of strings. */
@@ -187,6 +187,32 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String backoffPolicy,
             long backoffDelaySeconds,
             String tagsJson) {
+        schedule(context, uniqueName, script, serviceArgument, periodic,
+                delaySeconds, intervalMinutes, networkRequired, chargingRequired,
+                policy, backoffPolicy, backoffDelaySeconds, tagsJson, true);
+    }
+
+    /**
+     * Schedule work, optionally without a unique name.
+     *
+     * Non-unique requests go through manager.enqueue() and carry `uniqueName`
+     * as a tag, so getInfoJsonByTag()/cancelByTag() can still find them.
+     */
+    public static void schedule(
+            Context context,
+            String uniqueName,
+            String script,
+            String serviceArgument,
+            boolean periodic,
+            long delaySeconds,
+            long intervalMinutes,
+            boolean networkRequired,
+            boolean chargingRequired,
+            String policy,
+            String backoffPolicy,
+            long backoffDelaySeconds,
+            String tagsJson,
+            boolean unique) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(networkRequired, chargingRequired);
         BackoffPolicy backoff = parseBackoff(backoffPolicy);
@@ -204,8 +230,14 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                         .setBackoffCriteria(
                                 backoff, backoffMillis, TimeUnit.MILLISECONDS);
                 addTags(builder, tags);
-                manager.enqueueUniquePeriodicWork(
-                        uniqueName, parsePeriodicPolicy(policy), builder.build());
+                if (unique) {
+                    manager.enqueueUniquePeriodicWork(
+                            uniqueName, parsePeriodicPolicy(policy),
+                            builder.build());
+                } else {
+                    builder.addTag(uniqueName);
+                    manager.enqueue(builder.build());
+                }
             } else {
                 OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
                         {{ name|capitalize }}Worker.class)
@@ -217,8 +249,14 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 if (delaySeconds > 0) {
                     builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
                 }
-                manager.enqueueUniqueWork(
-                        uniqueName, parseOneTimePolicy(policy), builder.build());
+                if (unique) {
+                    manager.enqueueUniqueWork(
+                            uniqueName, parseOneTimePolicy(policy),
+                            builder.build());
+                } else {
+                    builder.addTag(uniqueName);
+                    manager.enqueue(builder.build());
+                }
             }
         } catch (JSONException e) {
             Log.e(TAG, "Invalid work tags", e);

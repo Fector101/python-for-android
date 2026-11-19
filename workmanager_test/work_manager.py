@@ -167,6 +167,9 @@ class Work:
         tags: Custom strings attached to the work request; query them with
             ``get_work_infos_by_tag()``. WorkManager adds its own worker-class
             tag in addition to these.
+        unique: When true (default), ``name`` is a WorkManager unique work
+            name. When false, work is enqueued with ``enqueue()`` and ``name``
+            is added as a tag for lookup/cancellation; ``policy`` is ignored.
         worker_name: Name passed to p4a's ``--worker`` build argument. The
             default matches ``--worker=script:...``.
     """
@@ -182,12 +185,14 @@ class Work:
     backoff_policy: str = "exponential"
     backoff_delay_seconds: int = 30
     tags: tuple = field(default_factory=tuple)
+    unique: bool = True
     worker_name: str = "script"
 
     def __post_init__(self) -> None:
         _validate_name(self.name)
         self.script = _validate_script(self.script)
         self.worker_name = _validate_worker_name(self.worker_name)
+        self.unique = bool(self.unique)
         self.delay_seconds = int(self.delay_seconds)
         if self.delay_seconds < 0:
             raise ValueError("delay_seconds must be >= 0")
@@ -200,18 +205,19 @@ class Work:
         if not isinstance(self.policy, str):
             raise ValueError("policy must be a string")
         self.policy = self.policy.lower()
-        allowed = (
-            ("keep", "replace", "update")
-            if self.is_periodic
-            else ("keep", "replace", "append", "append_or_replace")
-        )
-        if self.policy not in allowed:
-            raise ValueError(
-                "policy must be one of {} for {} work".format(
-                    ", ".join(repr(value) for value in allowed),
-                    "periodic" if self.is_periodic else "one-time",
-                )
+        if self.unique:
+            allowed = (
+                ("keep", "replace", "update")
+                if self.is_periodic
+                else ("keep", "replace", "append", "append_or_replace")
             )
+            if self.policy not in allowed:
+                raise ValueError(
+                    "policy must be one of {} for {} work".format(
+                        ", ".join(repr(value) for value in allowed),
+                        "periodic" if self.is_periodic else "one-time",
+                    )
+                )
         self.backoff_policy = self.backoff_policy.lower()
         if self.backoff_policy not in ("exponential", "linear"):
             raise ValueError(
@@ -228,6 +234,11 @@ class Work:
                 "backoff_delay_seconds must be between 1 and 86400"
             )
         self.tags = _validate_tags(self.tags)
+        if not self.unique and len(self.tags) > 9:
+            raise ValueError(
+                "non-unique work supports at most 9 custom tags "
+                "(the name is added as a tenth tag)"
+            )
 
     @property
     def is_periodic(self) -> bool:
@@ -272,6 +283,7 @@ class Work:
             self.backoff_policy,
             self.backoff_delay_seconds,
             self.tags_json(),
+            self.unique,
         )
         return self
 
@@ -289,16 +301,19 @@ class Work:
         )
 
     def cancel(self) -> None:
-        cancel(self.name, worker_name=self.worker_name)
+        cancel(self.name, worker_name=self.worker_name, unique=self.unique)
 
     def get_info(self) -> str:
-        return get_info(self.name, worker_name=self.worker_name)
+        return get_info(self.name, worker_name=self.worker_name,
+                        unique=self.unique)
 
     def get_work_info(self) -> Optional[WorkInfo]:
-        return get_work_info(self.name, worker_name=self.worker_name)
+        return get_work_info(self.name, worker_name=self.worker_name,
+                             unique=self.unique)
 
     def get_work_infos(self) -> WorkInfos:
-        return get_work_infos(self.name, worker_name=self.worker_name)
+        return get_work_infos(self.name, worker_name=self.worker_name,
+                              unique=self.unique)
 
 
 @dataclass
@@ -386,9 +401,13 @@ def schedule(name: str, script: str, **kwargs: Any) -> Work:
     return Work(name=name, script=script, **kwargs).schedule()
 
 
-def cancel(name: str, worker_name: str = "script") -> None:
-    """Cancel a unique work request by name."""
-    _worker_class(_validate_worker_name(worker_name)).cancel(_context(), name)
+def cancel(name: str, worker_name: str = "script", unique: bool = True) -> None:
+    """Cancel work by name; non-unique work is cancelled by its name tag."""
+    worker = _worker_class(_validate_worker_name(worker_name))
+    if unique:
+        worker.cancel(_context(), name)
+    else:
+        worker.cancelByTag(_context(), name)
 
 
 def cancel_all(worker_name: str = "script") -> None:
@@ -401,8 +420,11 @@ def cancel_by_tag(tag: str, worker_name: str = "script") -> None:
     _worker_class(_validate_worker_name(worker_name)).cancelByTag(_context(), tag)
 
 
-def get_info(name: str, worker_name: str = "script") -> str:
+def get_info(name: str, worker_name: str = "script", unique: bool = True) -> str:
     """Return the first WorkInfo state for ``name`` as a string."""
+    if not unique:
+        infos = get_work_infos_by_tag(name, worker_name=worker_name).infos
+        return infos[0].state if infos else "NOT_FOUND"
     return _worker_class(_validate_worker_name(worker_name)).getStatus(
         _context(), name
     )
@@ -474,8 +496,11 @@ def _parse_info_json(raw: str) -> WorkInfos:
     )
 
 
-def get_work_infos(name: str, worker_name: str = "script") -> WorkInfos:
+def get_work_infos(
+        name: str, worker_name: str = "script", unique: bool = True) -> WorkInfos:
     """Return every WorkManager work-info row for ``name``."""
+    if not unique:
+        return get_work_infos_by_tag(name, worker_name=worker_name)
     raw = _worker_class(_validate_worker_name(worker_name)).getInfoJson(
         _context(), name
     )
@@ -490,9 +515,11 @@ def get_work_infos_by_tag(tag: str, worker_name: str = "script") -> WorkInfos:
     return _parse_info_json(raw)
 
 
-def get_work_info(name: str, worker_name: str = "script") -> Optional[WorkInfo]:
+def get_work_info(
+        name: str, worker_name: str = "script",
+        unique: bool = True) -> Optional[WorkInfo]:
     """Return the active row for ``name``, or the newest row if all finished."""
-    infos = get_work_infos(name, worker_name=worker_name).infos
+    infos = get_work_infos(name, worker_name=worker_name, unique=unique).infos
     if not infos:
         return None
     for info in infos:

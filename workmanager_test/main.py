@@ -55,6 +55,14 @@ class WorkManagerTestApp(App):
         constraint_row.add_widget(Label(text="charging", size_hint_x=0.25))
         root.add_widget(constraint_row)
 
+        unique_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        unique_row.add_widget(Label(text="Scheduling:", size_hint_x=0.35))
+        self.unique_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        self.unique_cb.bind(activated=lambda *_: self.refresh_status())
+        unique_row.add_widget(self.unique_cb)
+        unique_row.add_widget(Label(text="non-unique", size_hint_x=0.65))
+        root.add_widget(unique_row)
+
         policy_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
         policy_row.add_widget(Label(text="Policy:", size_hint_x=0.35))
         self.policy_button = Button(text=self.policy, size_hint_x=0.65)
@@ -117,6 +125,7 @@ class WorkManagerTestApp(App):
         self._stop_polling = threading.Event()
         self._poll_name = self.current_name
         self._poll_tag = self.current_tag
+        self._poll_unique = self.is_unique
         self._poll_thread = threading.Thread(
             target=self._poll_worker,
             name="work-status-poll",
@@ -174,6 +183,11 @@ class WorkManagerTestApp(App):
         return {"tags": [self.current_tag]}
 
     @property
+    def is_unique(self):
+        checkbox = getattr(self, "unique_cb", None)
+        return not bool(checkbox and checkbox.activated)
+
+    @property
     def constraints(self):
         network = getattr(self, "network_cb", None)
         charging = getattr(self, "charging_cb", None)
@@ -203,6 +217,7 @@ class WorkManagerTestApp(App):
                 args={"message": self.message},
                 delay_seconds=10,
                 policy=self.policy,
+                unique=self.is_unique,
                 **constraints,
             ).schedule()
             self._note("Scheduled one-time heartbeat: {} ({}, policy={})".format(
@@ -220,6 +235,7 @@ class WorkManagerTestApp(App):
                 args={"message": "periodic"},
                 interval_minutes=15,
                 policy=self.policy,
+                unique=self.is_unique,
                 **constraints,
             ).schedule()
             self._note("Scheduled periodic heartbeat: heartbeat_periodic ({}, policy={})".format(
@@ -237,6 +253,7 @@ class WorkManagerTestApp(App):
                 args={"message": "expected failure"},
                 delay_seconds=10,
                 policy=self.policy,
+                unique=self.is_unique,
                 **constraints,
             ).schedule()
             self._note("Scheduled failing script: failing_once ({}, policy={})".format(
@@ -254,6 +271,7 @@ class WorkManagerTestApp(App):
                 args={"message": "slow work", "sleep_seconds": 30},
                 delay_seconds=2,
                 policy=self.policy,
+                unique=self.is_unique,
                 **constraints,
             ).schedule()
             self._note("Scheduled slow heartbeat: slow_once ({}, policy={})".format(
@@ -271,6 +289,7 @@ class WorkManagerTestApp(App):
                 args={"message": "output demo", "steps": 3},
                 delay_seconds=2,
                 policy=self.policy,
+                unique=self.is_unique,
                 **constraints,
             ).schedule()
             self._note("Scheduled result worker: result_once ({}, policy={})".format(
@@ -288,6 +307,7 @@ class WorkManagerTestApp(App):
                 args={"message": "retry demo", "max_attempts": 3},
                 delay_seconds=2,
                 policy=self.policy,
+                unique=self.is_unique,
                 **self.constraints,
                 **backoff,
             ).schedule()
@@ -329,6 +349,7 @@ class WorkManagerTestApp(App):
                 args={"message": "tagged work", "sleep_seconds": 8},
                 delay_seconds=2,
                 policy="replace",
+                unique=self.is_unique,
                 **self.constraints,
                 **self.tags,
             ).schedule()
@@ -348,7 +369,7 @@ class WorkManagerTestApp(App):
 
     def cancel_work(self, _=None, touch=None):
         try:
-            cancel(self.current_name)
+            cancel(self.current_name, unique=self.is_unique)
             self._note("Cancelled: {}".format(self.current_name))
         except Exception as exc:
             self._note("Cancel failed: {!r}".format(exc))
@@ -392,6 +413,7 @@ class WorkManagerTestApp(App):
         """Ask the polling thread for an update; never blocks the UI thread."""
         self._poll_name = self.current_name
         self._poll_tag = self.current_tag
+        self._poll_unique = self.is_unique
         self._poll_now.set()
 
     def _poll_worker(self):
@@ -401,12 +423,18 @@ class WorkManagerTestApp(App):
             if self._stop_polling.is_set():
                 break
             name = self._poll_name
-            result = {"name": name, "tag_name": self._poll_tag}
-            for key, work_name in (("one_time", name),
-                                   ("periodic", "heartbeat_periodic"),
-                                   ("chain", "chain_once")):
+            unique = self._poll_unique
+            result = {
+                "name": name,
+                "tag_name": self._poll_tag,
+                "mode": "unique" if unique else "non-unique",
+            }
+            for key, work_name, work_unique in (
+                    ("one_time", name, unique),
+                    ("periodic", "heartbeat_periodic", unique),
+                    ("chain", "chain_once", True)):
                 try:
-                    result[key] = get_work_info(work_name)
+                    result[key] = get_work_info(work_name, unique=work_unique)
                 except Exception as exc:
                     # A failed query must not kill the polling thread.
                     result[key] = exc
@@ -418,6 +446,7 @@ class WorkManagerTestApp(App):
 
     def _drain_status(self, dt=None):
         self._poll_name = self.current_name
+        self._poll_unique = self.is_unique
         latest = None
         while True:
             try:
@@ -432,8 +461,9 @@ class WorkManagerTestApp(App):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
         self.status.text = (
-            "Status: {}: {}\nPeriodic: {}\nChain: {}\nTag {}: {}".format(
+            "Status: {} ({}): {}\nPeriodic: {}\nChain: {}\nTag {}: {}".format(
                 latest.get("name", self.current_name),
+                latest.get("mode", "unique"),
                 self._format_info(latest.get("one_time")),
                 self._format_info(latest.get("periodic")),
                 self._format_info(latest.get("chain")),

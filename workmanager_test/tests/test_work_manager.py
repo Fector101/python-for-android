@@ -76,7 +76,7 @@ def test_one_time_schedule_arguments(java):
     assert work.schedule() is work
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json) = calls["schedule"]
+     tags_json, unique) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -90,6 +90,7 @@ def test_one_time_schedule_arguments(java):
     assert backoff_policy == "exponential"
     assert backoff_delay == 30
     assert tags_json == "[]"
+    assert unique is True
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -219,12 +220,13 @@ def test_one_time_schedule_passes_constraints(java):
 
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json) = calls["schedule"]
+     tags_json, unique) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
     assert network is True
     assert charging is True
+    assert unique is True
 
 
 def test_custom_worker_name(java):
@@ -734,3 +736,106 @@ def test_work_object_exposes_work_info(java):
 
     assert work.get_work_info().state == "SUCCEEDED"
     assert work.get_work_infos().found is True
+
+
+def test_non_unique_flag_reaches_java(java):
+    _, calls = java
+    work_manager.Work(
+        name="nonunique_once", script="workers/heartbeat.py", unique=False,
+    ).schedule()
+    assert calls["schedule"][13] is False
+    assert calls["schedule"][9] == "keep"
+
+    work_manager.Work(
+        name="nonunique_periodic", script="workers/heartbeat.py",
+        interval_minutes=15, unique=False,
+    ).schedule()
+    assert calls["schedule"][13] is False
+
+
+@pytest.mark.parametrize("policy", ["append", "update", "bogus", "REPLACE"])
+def test_non_unique_ignores_policy(policy):
+    work = work_manager.Work(
+        name="nonunique_policy", script="workers/heartbeat.py",
+        unique=False, policy=policy,
+    )
+    assert work.policy == policy.lower()
+
+
+def test_non_unique_tag_limit():
+    work_manager.Work(
+        name="nonunique_tags", script="workers/heartbeat.py",
+        unique=False, tags=["t{}".format(i) for i in range(9)],
+    )
+    with pytest.raises(ValueError, match="tag"):
+        work_manager.Work(
+            name="nonunique_tags", script="workers/heartbeat.py",
+            unique=False, tags=["t{}".format(i) for i in range(10)],
+        )
+
+
+def _tag_infos(*states):
+    return json.dumps({
+        "found": True,
+        "infos": [
+            {"id": "id{}".format(i), "state": state}
+            for i, state in enumerate(states)
+        ],
+    })
+
+
+def test_non_unique_get_work_infos_uses_tag_query(java):
+    _, calls = java
+    calls["tag_info_json"] = _tag_infos("SUCCEEDED", "SUCCEEDED")
+
+    infos = work_manager.get_work_infos("nonunique_once", unique=False)
+
+    assert calls["getInfoJsonByTag"] == (
+        calls["getInfoJsonByTag"][0], "nonunique_once")
+    assert "getInfoJson" not in calls
+    assert len(infos.infos) == 2
+
+
+def test_non_unique_get_work_info_picks_active_row(java):
+    _, calls = java
+    calls["tag_info_json"] = _tag_infos("SUCCEEDED", "RUNNING")
+
+    info = work_manager.get_work_info("nonunique_once", unique=False)
+
+    assert info.id == "id1"
+    assert info.state == "RUNNING"
+
+
+def test_non_unique_get_info_uses_tag_query(java):
+    _, calls = java
+    calls["tag_info_json"] = _tag_infos("FAILED")
+
+    assert work_manager.get_info("nonunique_once", unique=False) == "FAILED"
+    assert "getStatus" not in calls
+
+
+def test_non_unique_cancel_uses_tag(java):
+    _, calls = java
+
+    work_manager.cancel("nonunique_once", unique=False)
+
+    assert calls["cancelByTag"] == (calls["cancelByTag"][0], "nonunique_once")
+    assert "cancel" not in calls
+
+
+def test_work_object_non_unique_dispatches_to_tag_helpers(java):
+    _, calls = java
+    calls["tag_info_json"] = _tag_infos("SUCCEEDED")
+    work = work_manager.Work(
+        name="nonunique_once", script="workers/heartbeat.py", unique=False,
+    )
+
+    assert work.get_work_infos().found is True
+    assert work.get_info() == "SUCCEEDED"
+    work.cancel()
+
+    assert calls["getInfoJsonByTag"][1] == "nonunique_once"
+    assert calls["cancelByTag"][1] == "nonunique_once"
+    assert "getInfoJson" not in calls
+    assert "cancel" not in calls
+

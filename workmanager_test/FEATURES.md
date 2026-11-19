@@ -26,12 +26,12 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
 | Chaining (`beginUniqueWork().then()`) | `3f4d6907` | `Work(...).then(Work(...))` builds a `WorkChain` (2..10 one-time steps, same worker class, no periodic steps). Java `scheduleChain()` takes a JSON array of per-step settings and applies `beginUniqueWork(name, policy, first).then(rest).enqueue()`, so name/policy/cancel/status apply to the whole chain. Device: step 2 stayed `BLOCKED` while step 1 ran (`CHAIN_MARKER step=1` at 20:59:55Z), then ran and both rows finished `SUCCEEDED` (step 2 output at 21:00:04Z); per-step outputs readable in `get_work_infos()`. |
 | Custom tags / query by tag | `e11a229c` | `Work(tags=[...])` adds custom tags to one-time, periodic and chain-step requests (JSON array string to Java `addTag()`); 1..10 tags of ≤100 chars, validated in Python. `get_work_infos_by_tag()` wraps `getWorkInfosByTag()` in the existing `WorkInfos` dataclasses, and `cancel_by_tag()` wraps `cancelAllWorkByTag()`. Device: two works sharing `tag_demo` were both returned by the tag query with `tags=['io.github.fector101.workmanagertest.ScriptWorker', 'tag_demo']` (WorkManager's auto class tag is additive), both finished `SUCCEEDED`; `cancel_by_tag('tag_cancel')` moved a third work to `CANCELLED`. |
 | More existing-work policies | `064ee7a6` | One-time `policy` now accepts `keep`, `replace`, `append` and `append_or_replace`; periodic accepts `keep`, `replace` and `update` (WorkManager 2.9.0). Java `parseOneTimePolicy()` / `parsePeriodicPolicy()` map the strings and fall back to KEEP; `scheduleChain()` uses the one-time parser too. `WorkChain.policy` accepts the four one-time values. Values are case-insensitive; invalid one-time/periodic pairings are rejected in Python. UI policy button cycles all five values (an invalid pairing is reported in the log area). Device: `append` under one name produced two distinct IDs, one `BLOCKED` while the other ran, then both `SUCCEEDED`; `update` on a periodic request kept the same ID with one row; `append_or_replace` accepted a re-schedule after the original finished. |
+| Non-unique work (`enqueue`) | pending | `Work(unique=False)` calls Java `manager.enqueue()` for both one-time and periodic requests; 14-arg `schedule()` overload adds the `unique` flag (older overloads delegate with `true`). The name is auto-added as a tag, so `get_work_infos(name, unique=False)` / `get_info()` / `get_work_info()` / `cancel()` dispatch to the existing tag-based Java methods, and `policy` is ignored for non-unique work. UI adds a "Non-unique" checkbox wired into status polling. Device: two one-time works with distinct IDs ran `RUNNING` concurrently (no `BLOCKED`, unlike APPEND), two non-unique periodic rows existed, tags contained `['io.github.fector101.workmanagertest.ScriptWorker', 'nonunique_once']`, and `cancel(name, unique=False)` moved both rows to `CANCELLED`. |
 
 ## Missing
 
 | Feature | State | Notes |
 |---|---|---|
-| Non-unique work (`enqueue`) | Missing | Every schedule call uses `enqueueUniqueWork` / `enqueueUniquePeriodicWork`. |
 | Network types beyond CONNECTED | Missing | `UNMETERED`, `NOT_ROAMING`, `NOT_REQUIRED` are not exposed. |
 | Battery / storage / idle constraints | Missing | `requiresBatteryNotLow`, `requiresStorageNotLow`, `requiresDeviceIdle` are not exposed. |
 | Expedited work / foreground long-running | Missing | No `setExpedited()` or foreground service type support. |
@@ -72,10 +72,13 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
   throws `IllegalStateException` from WorkManager; use `append_or_replace` for
   re-scheduling after a chain finishes. The UI shows the failure in its log
   area rather than crashing.
+- Non-unique work uses the work `name` as an auto-added tag for lookup and
+  cancellation, on top of custom tags. WorkManager allows 10 tags per request,
+  so Python caps custom tags at 9 when `unique=False`. `policy` is ignored for
+  non-unique work because `enqueue()` has no policy argument.
 
 ## Suggested order for the next features
 
-1. Non-unique `enqueue`, extra network types and battery/storage/idle
-   constraints.
+1. Extra network types and battery/storage/idle constraints.
 2. Expedited work / foreground long-running work.
 3. Data propagation between chained steps (parent output into child input).
