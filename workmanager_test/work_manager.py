@@ -19,6 +19,11 @@ from typing import Any, Dict, Optional
 
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 _MAX_SCRIPT_LENGTH = 120  # start.c ENTRYPOINT_MAXLEN is 128.
+# androidx.work.Data.MAX_DATA_BYTES, and a reserve for the other entries the
+# generated worker puts in the same Data (script, package and service class).
+_MAX_DATA_BYTES = 10 * 1024
+_DATA_OVERHEAD_BYTES = 512
+_MAX_ARGUMENT_BYTES = _MAX_DATA_BYTES - _DATA_OVERHEAD_BYTES
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
 
 
@@ -168,12 +173,21 @@ class Work:
     def argument_json(self) -> str:
         """Return the JSON string placed in PYTHON_SERVICE_ARGUMENT."""
         try:
-            return json.dumps(
+            payload = json.dumps(
                 self.args if self.args is not None else {},
                 separators=(",", ":"),
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("Work args must be JSON-serialisable") from exc
+        size = len(payload.encode("utf-8"))
+        if size > _MAX_ARGUMENT_BYTES:
+            raise ValueError(
+                "Work args are too large for WorkManager Data: {} bytes "
+                "(max {} for PYTHON_SERVICE_ARGUMENT, limit {} bytes)".format(
+                    size, _MAX_ARGUMENT_BYTES, _MAX_DATA_BYTES
+                )
+            )
+        return payload
 
     def schedule(self) -> "Work":
         worker = _worker_class(self.worker_name)

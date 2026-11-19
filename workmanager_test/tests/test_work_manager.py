@@ -187,6 +187,55 @@ def test_args_must_be_json_serialisable():
         ).argument_json()
 
 
+def test_argument_json_accepts_exactly_max_size():
+    wrapper = len('{"blob":""}')
+    work = work_manager.Work(
+        name="big_ok",
+        script="workers/heartbeat.py",
+        args={"blob": "x" * (work_manager._MAX_ARGUMENT_BYTES - wrapper)},
+    )
+
+    assert len(work.argument_json()) == work_manager._MAX_ARGUMENT_BYTES
+
+
+def test_argument_json_rejects_payload_over_limit():
+    wrapper = len('{"blob":""}')
+    work = work_manager.Work(
+        name="big_bad",
+        script="workers/heartbeat.py",
+        args={"blob": "x" * (work_manager._MAX_ARGUMENT_BYTES - wrapper + 1)},
+    )
+
+    with pytest.raises(ValueError, match="too large for WorkManager Data"):
+        work.argument_json()
+
+
+def test_argument_json_counts_utf8_bytes_not_characters():
+    work = work_manager.Work(
+        name="unicode_bad",
+        script="workers/heartbeat.py",
+        args={"blob": "\u00e9" * (work_manager._MAX_ARGUMENT_BYTES // 2 + 1)},
+    )
+
+    with pytest.raises(ValueError, match="too large for WorkManager Data"):
+        work.argument_json()
+
+
+def test_schedule_rejects_oversized_args_before_java(java):
+    _, calls = java
+    wrapper = len('{"blob":""}')
+    work = work_manager.Work(
+        name="no_java_call",
+        script="workers/heartbeat.py",
+        args={"blob": "x" * (work_manager._MAX_ARGUMENT_BYTES - wrapper + 1)},
+    )
+
+    with pytest.raises(ValueError, match="too large for WorkManager Data"):
+        work.schedule()
+
+    assert "schedule" not in calls
+
+
 def test_get_work_info_parses_all_fields(java):
     _, calls = java
     calls["info_json"] = json.dumps({
