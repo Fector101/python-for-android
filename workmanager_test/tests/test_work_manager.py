@@ -76,7 +76,8 @@ def test_one_time_schedule_arguments(java):
     assert work.schedule() is work
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle) = calls["schedule"]
+     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle, \
+     expedited, expedited_policy) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -95,6 +96,8 @@ def test_one_time_schedule_arguments(java):
     assert battery_not_low is False
     assert storage_not_low is False
     assert device_idle is False
+    assert expedited is False
+    assert expedited_policy == "run_as_non_expedited"
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -224,7 +227,8 @@ def test_one_time_schedule_passes_constraints(java):
 
     (context, name, script, data, periodic, delay, interval,
      network, charging, policy, backoff_policy, backoff_delay,
-     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle) = calls["schedule"]
+     tags_json, unique, network_type, battery_not_low, storage_not_low, device_idle, \
+     expedited, expedited_policy) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
@@ -966,4 +970,152 @@ def test_work_object_non_unique_dispatches_to_tag_helpers(java):
     assert calls["cancelByTag"][1] == "nonunique_once"
     assert "getInfoJson" not in calls
     assert "cancel" not in calls
+
+
+def test_expedited_defaults_reach_java(java):
+    _, calls = java
+    work = work_manager.Work(
+        name="expedited_default", script="workers/heartbeat.py",
+    )
+    assert work.expedited is False
+    assert work.expedited_policy == "run_as_non_expedited"
+    work.schedule()
+
+    args = calls["schedule"]
+    assert len(args) == 20
+    assert args[18] is False
+    assert args[19] == "run_as_non_expedited"
+
+
+def test_expedited_policy_reaches_java(java):
+    _, calls = java
+    work_manager.Work(
+        name="expedited_drop", script="workers/heartbeat.py",
+        expedited=True, expedited_policy="DROP",
+    ).schedule()
+
+    args = calls["schedule"]
+    assert args[4] is False
+    assert args[5] == 0
+    assert args[18] is True
+    assert args[19] == "drop"
+
+
+@pytest.mark.parametrize("policy,expected", [
+    ("drop", "drop"),
+    ("DROP", "drop"),
+    ("run_as_non_expedited", "run_as_non_expedited"),
+    ("RUN_AS_NON_EXPEDITED", "run_as_non_expedited"),
+])
+def test_expedited_policy_is_case_insensitive(java, policy, expected):
+    _, calls = java
+    work = work_manager.Work(
+        name="expedited_policy", script="workers/heartbeat.py",
+        expedited_policy=policy,
+    )
+    assert work.expedited_policy == expected
+    work.schedule()
+    assert calls["schedule"][19] == expected
+
+
+@pytest.mark.parametrize("value", [1, "yes", ["x"], object()])
+def test_expedited_coerces_to_bool(java, value):
+    _, calls = java
+    work_manager.Work(
+        name="expedited_coerce", script="workers/heartbeat.py",
+        expedited=value,
+    ).schedule()
+    assert calls["schedule"][18] is True
+
+
+@pytest.mark.parametrize("policy", ["bogus", "", 42, None, "drop_work_request"])
+def test_invalid_expedited_policy(policy):
+    with pytest.raises(ValueError, match="expedited_policy"):
+        work_manager.Work(
+            name="bad_expedited", script="workers/heartbeat.py",
+            expedited_policy=policy,
+        )
+
+
+def test_expedited_rejects_periodic_work():
+    with pytest.raises(ValueError, match="periodic"):
+        work_manager.Work(
+            name="bad_expedited", script="workers/heartbeat.py",
+            interval_minutes=15, expedited=True,
+        )
+
+
+def test_expedited_rejects_initial_delay():
+    with pytest.raises(ValueError, match="delay"):
+        work_manager.Work(
+            name="bad_expedited", script="workers/heartbeat.py",
+            delay_seconds=1, expedited=True,
+        )
+
+
+@pytest.mark.parametrize("field", [
+    "charging_required", "battery_not_low", "device_idle",
+])
+def test_expedited_rejects_unsupported_constraints(field):
+    with pytest.raises(ValueError, match="only supports"):
+        work_manager.Work(
+            name="bad_expedited", script="workers/heartbeat.py",
+            expedited=True, **{field: True},
+        )
+
+
+def test_expedited_allows_network_and_storage_constraints(java):
+    _, calls = java
+    work_manager.Work(
+        name="expedited_ok", script="workers/heartbeat.py",
+        expedited=True, network_required=True, network_type="unmetered",
+        storage_not_low=True,
+    ).schedule()
+
+    args = calls["schedule"]
+    assert args[7] is True
+    assert args[14] == "unmetered"
+    assert args[16] is True
+    assert args[18] is True
+
+
+def test_expedited_works_with_non_unique_enqueue(java):
+    _, calls = java
+    work_manager.Work(
+        name="expedited_nonunique", script="workers/heartbeat.py",
+        unique=False, expedited=True,
+    ).schedule()
+
+    assert calls["schedule"][13] is False
+    assert calls["schedule"][18] is True
+
+
+def test_expedited_step_cannot_join_chain():
+    with pytest.raises(ValueError, match="chain"):
+        work_manager.Work(
+            name="expedited_chain", script="workers/chain.py",
+        ).then(work_manager.Work(
+            name="s2", script="workers/chain.py", expedited=True,
+        ))
+    with pytest.raises(ValueError, match="chain"):
+        work_manager.Work(
+            name="expedited_chain", script="workers/chain.py",
+            expedited=True,
+        ).then(work_manager.Work(
+            name="s2", script="workers/chain.py",
+        ))
+
+
+def test_chain_steps_json_has_no_expedited_flag(java):
+    _, calls = java
+    work_manager.Work(
+        name="chain_plain", script="workers/chain.py",
+        expedited=False, expedited_policy="drop",
+    ).then(work_manager.Work(
+        name="s2", script="workers/chain.py",
+    )).schedule()
+
+    steps = json.loads(calls["scheduleChain"][3])
+    assert "expedited" not in steps[0]
+    assert "expedited_policy" not in steps[0]
 

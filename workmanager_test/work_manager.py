@@ -178,6 +178,11 @@ class Work:
         unique: When true (default), ``name`` is a WorkManager unique work
             name. When false, work is enqueued with ``enqueue()`` and ``name``
             is added as a tag for lookup/cancellation; ``policy`` is ignored.
+        expedited: Run one-time work with higher priority, using a foreground
+            service on Android 12+. WorkManager 2.9.0 does not allow an initial
+            delay, periodic work, or charging/battery/idle constraints.
+        expedited_policy: What to do when the app is out of expedited job quota:
+            ``"run_as_non_expedited"`` (default) or ``"drop"``.
         worker_name: Name passed to p4a's ``--worker`` build argument. The
             default matches ``--worker=script:...``.
     """
@@ -198,6 +203,8 @@ class Work:
     backoff_delay_seconds: int = 30
     tags: tuple = field(default_factory=tuple)
     unique: bool = True
+    expedited: bool = False
+    expedited_policy: str = "run_as_non_expedited"
     worker_name: str = "script"
 
     def __post_init__(self) -> None:
@@ -225,6 +232,31 @@ class Work:
             if self.interval_minutes < 15:
                 raise ValueError(
                     "WorkManager periodic work requires interval_minutes >= 15"
+                )
+        self.expedited = bool(self.expedited)
+        if not isinstance(self.expedited_policy, str):
+            raise ValueError("expedited_policy must be a string")
+        self.expedited_policy = self.expedited_policy.lower()
+        if self.expedited_policy not in ("run_as_non_expedited", "drop"):
+            raise ValueError(
+                "expedited_policy must be 'run_as_non_expedited' or 'drop'"
+            )
+        if self.expedited:
+            if self.is_periodic:
+                raise ValueError("expedited work cannot be periodic")
+            if self.delay_seconds:
+                raise ValueError("expedited work cannot have an initial delay")
+            unsupported = [
+                name for name, value in (
+                    ("charging_required", self.charging_required),
+                    ("battery_not_low", self.battery_not_low),
+                    ("device_idle", self.device_idle),
+                ) if value
+            ]
+            if unsupported:
+                raise ValueError(
+                    "expedited work only supports network and storage "
+                    "constraints, not: {}".format(", ".join(unsupported))
                 )
         if not isinstance(self.policy, str):
             raise ValueError("policy must be a string")
@@ -312,6 +344,8 @@ class Work:
             self.battery_not_low,
             self.storage_not_low,
             self.device_idle,
+            self.expedited,
+            self.expedited_policy,
         )
         return self
 
@@ -351,7 +385,9 @@ class WorkChain:
     Build one with ``Work(...).then(Work(...))``. Steps run in order, each one
     starting only after the previous one succeeds; a failed or retried step
     blocks the rest of the chain. ``policy`` uses the one-time values:
-    ``keep``, ``replace``, ``append`` or ``append_or_replace``.
+    ``keep``, ``replace``, ``append`` or ``append_or_replace``. Expedited
+    steps are not supported because WorkManager chains are scheduled as a
+    single unexpedited continuation.
     """
 
     name: str
@@ -382,6 +418,8 @@ class WorkChain:
             raise ValueError("chain steps must be Work instances")
         if step.is_periodic:
             raise ValueError("periodic work cannot be part of a chain")
+        if step.expedited:
+            raise ValueError("expedited work cannot be part of a chain")
         if step.worker_name != self.worker_name:
             raise ValueError("all chain steps must use the same worker_name")
 

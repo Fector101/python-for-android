@@ -135,6 +135,38 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 : BackoffPolicy.EXPONENTIAL;
     }
 
+    /**
+     * Apply setExpedited() reflectively.
+     *
+     * WorkManager 2.6.0 (used for API <= 30) has no expedited API, so a direct
+     * reference would break those builds. On 2.9.0 this resolves to the real
+     * setExpedited(OutOfQuotaPolicy) call.
+     */
+    private static void setExpedited(
+            OneTimeWorkRequest.Builder builder, String policy) {
+        try {
+            Class<?> policyClass = Class.forName("androidx.work.OutOfQuotaPolicy");
+            String name = "drop".equalsIgnoreCase(policy)
+                    ? "DROP_WORK_REQUEST"
+                    : "RUN_AS_NON_EXPEDITED_WORK_REQUEST";
+            Object value = null;
+            for (Object constant : policyClass.getEnumConstants()) {
+                if (constant.toString().equals(name)) {
+                    value = constant;
+                    break;
+                }
+            }
+            if (value == null) {
+                Log.w(TAG, "Unknown OutOfQuotaPolicy " + name);
+                return;
+            }
+            builder.getClass().getMethod("setExpedited", policyClass)
+                    .invoke(builder, value);
+        } catch (Exception e) {
+            Log.w(TAG, "Expedited work is unavailable in this WorkManager version", e);
+        }
+    }
+
     /** Map Python's one-time policy names, falling back to KEEP. */
     private static ExistingWorkPolicy parseOneTimePolicy(String policy) {
         if ("replace".equalsIgnoreCase(policy)) {
@@ -258,6 +290,33 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 networkType, false, false, false);
     }
 
+    /** Legacy overload: schedule work without expedited priority. */
+    public static void schedule(
+            Context context,
+            String uniqueName,
+            String script,
+            String serviceArgument,
+            boolean periodic,
+            long delaySeconds,
+            long intervalMinutes,
+            boolean networkRequired,
+            boolean chargingRequired,
+            String policy,
+            String backoffPolicy,
+            long backoffDelaySeconds,
+            String tagsJson,
+            boolean unique,
+            String networkType,
+            boolean batteryNotLow,
+            boolean storageNotLow,
+            boolean deviceIdle) {
+        schedule(context, uniqueName, script, serviceArgument, periodic,
+                delaySeconds, intervalMinutes, networkRequired, chargingRequired,
+                policy, backoffPolicy, backoffDelaySeconds, tagsJson, unique,
+                networkType, batteryNotLow, storageNotLow, deviceIdle,
+                false, "run_as_non_expedited");
+    }
+
     /**
      * Schedule work, optionally without a unique name.
      *
@@ -282,7 +341,9 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String networkType,
             boolean batteryNotLow,
             boolean storageNotLow,
-            boolean deviceIdle) {
+            boolean deviceIdle,
+            boolean expedited,
+            String expeditedPolicy) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(
                 networkRequired, chargingRequired, networkType,
@@ -294,6 +355,9 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         try {
             JSONArray tags = new JSONArray(tagsJson);
             if (periodic) {
+                if (expedited) {
+                    Log.w(TAG, "Expedited is not supported for periodic work; ignoring");
+                }
                 long minutes = Math.max(15L, intervalMinutes);
                 PeriodicWorkRequest.Builder builder = new PeriodicWorkRequest.Builder(
                         {{ name|capitalize }}Worker.class, minutes, TimeUnit.MINUTES)
@@ -318,6 +382,9 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                         {{ name|capitalize }}Worker.class)
                         .setInputData(data)
                         .setConstraints(constraints);
+                if (expedited) {
+                    setExpedited(builder, expeditedPolicy);
+                }
                 if (!deviceIdle) {
                     builder.setBackoffCriteria(
                             backoff, backoffMillis, TimeUnit.MILLISECONDS);

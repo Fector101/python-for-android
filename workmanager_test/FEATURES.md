@@ -29,12 +29,13 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
 | Non-unique work (`enqueue`) | `575e2216` | `Work(unique=False)` calls Java `manager.enqueue()` for both one-time and periodic requests; 14-arg `schedule()` overload adds the `unique` flag (older overloads delegate with `true`). The name is auto-added as a tag, so `get_work_infos(name, unique=False)` / `get_info()` / `get_work_info()` / `cancel()` dispatch to the existing tag-based Java methods, and `policy` is ignored for non-unique work. UI adds a "Non-unique" checkbox wired into status polling. Device: two one-time works with distinct IDs ran `RUNNING` concurrently (no `BLOCKED`, unlike APPEND), two non-unique periodic rows existed, tags contained `['io.github.fector101.workmanagertest.ScriptWorker', 'nonunique_once']`, and `cancel(name, unique=False)` moved both rows to `CANCELLED`. |
 | Network types beyond CONNECTED | `6afe4992` | `Work(network_type=...)` accepts `connected` (default), `unmetered`, `not_roaming`, `not_required` (case-insensitive, validated in Python). `network_required` stays the master switch. Java `parseNetworkType()` maps the strings to `NetworkType.*` and falls back to `CONNECTED`; a 15-arg `schedule()` overload carries the extra value (older overloads delegate with `"connected"`), and chain steps read `network_type` from their JSON. UI adds a "Network type:" button cycling the four values. Device: on wifi all four types were accepted and finished `SUCCEEDED`; with airplane mode + wifi disabled (no active default network), `connected` stayed `ENQUEUED` while `not_required` ran `RUNNING` → `SUCCEEDED`, proving the constraint actually gates execution. The post-restore `connected` attempt hit MIUI's `proc frequent died!` / `process is bad` throttle (worker process never launched); the same APK ran all workers fine before that, so it is the known platform throttle, not a feature bug. |
 | Battery / storage / idle constraints | `d84700ce` | `Work(battery_not_low=..., storage_not_low=..., device_idle=...)` maps to `setRequiresBatteryNotLow` / `setRequiresStorageNotLow` / `setRequiresDeviceIdle`. An 18-arg `schedule()` overload carries the three flags (older overloads delegate with `false,false,false`), chain steps read the three keys, and the UI gains battery/storage/idle checkboxes. Java skips `setBackoffCriteria()` for `device_idle` work — WorkManager throws `IllegalArgumentException: Cannot set backoff criteria on an idle mode job` otherwise. Device baseline (battery 97, storage 34 GB free, `mState=ACTIVE`): battery/storage/free all `SUCCEEDED` while idle stayed `ENQUEUED`. With `dumpsys battery unplug` + `set level 5` (`Battery not low: false`): battery work stayed `ENQUEUED` while storage/free ran and finished `SUCCEEDED`. Storage has no safe low-storage mock, so it has baseline evidence only. `dumpsys deviceidle force-idle` was attempted but the run hit the MIUI process-bad throttle, so the idle→running direction was not directly observed; the ACTIVE-device `ENQUEUED` result proves the gate. All device settings restored. |
+| Expedited work (scheduling) | (pending commit) | `Work(expedited=True, expedited_policy=...)` maps one-time work to `setExpedited(OutOfQuotaPolicy)` with `run_as_non_expedited` (default) or `drop`. Python rejects periodic work, initial delays, and charging/battery/idle constraints — WorkManager 2.9.0 rejects all of those for expedited requests. Java calls `setExpedited()` reflectively so builds using WorkManager 2.6.0 (API ≤ 30) still compile. `PythonWorker.getForegroundInfoAsync()` supplies the notification WorkManager requires for expedited work, and the p4a manifest template adds `FOREGROUND_SERVICE_DATA_SYNC` plus `foregroundServiceType="dataSync"` on WorkManager's `SystemForegroundService` when workers are enabled. UI adds an "Expedited" checkbox, policy button, and immediate-work button (chains stay unexpedited). Device: `dumpsys jobscheduler` showed `expeditedQuotaApproved: true … (started as EJ: true)` for this package, the 5-second heartbeat ran and finished `SUCCEEDED` with both policies, no `MissingForegroundServiceTypeException` / `SecurityException` / Java exception. |
 
 ## Missing
 
 | Feature | State | Notes |
 |---|---|---|
-| Expedited work / foreground long-running | Missing | No `setExpedited()` or foreground service type support. |
+| Worker-side `setForegroundAsync()` promotion | Missing | Expedited work now gets a foreground notification via `getForegroundInfoAsync()`, but a running worker cannot promote itself to a foreground service on demand yet. |
 | Multiple distinct worker classes | Missing | Only the `script` worker is generated; `--worker` can be repeated but the Python API defaults to one class name. |
 | Stop reason for constrained work | Missing from verification | The field is read correctly, but WorkManager 2.9.0 reported `NOT_STOPPED` for `ENQUEUED` constrained rows; a real stop-reason case has not been observed. |
 
@@ -53,7 +54,9 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
   `build/bootstrap_builds/sdl3/templates/Worker.tmpl.java` and
   `build/bootstrap_builds/sdl3/src/main/java/org/kivy/android/PythonWorker.java`,
   otherwise the APK keeps the stale Java. The two template copies are easy to
-  miss — only refreshing the `dists` one is not enough.
+  miss — only refreshing the `dists` one is not enough. The cached
+   `AndroidManifest.tmpl.xml` in both `templates/` directories also needs
+   refreshing when the manifest template changes.
 - `start.c` resolves a requested `.py` worker entrypoint to `.pyc` (it prefers
   the compiled file) and passes that resolved path as `ANDROID_ENTRYPOINT`.
   `work_result.py` strips `.pyc` so its per-script result dir matches the Java
@@ -92,7 +95,12 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
   battery-constrained work. Restore with `dumpsys battery reset`. There is no
   safe low-storage mock, so `storage_not_low` has baseline evidence only.
 
+- WorkManager 2.9.0 rejects expedited requests with an initial delay, periodic
+  work, or charging/battery/idle constraints. Python validates all of these
+  before the Java call; only network and storage constraints are compatible.
+  Expedited steps are also rejected in `WorkChain`.
+
 ## Suggested order for the next features
 
-1. Expedited work / foreground long-running work.
-3. Data propagation between chained steps (parent output into child input).
+1. Worker-side `setForegroundAsync()` promotion for long-running work.
+2. Data propagation between chained steps (parent output into child input).

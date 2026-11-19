@@ -24,6 +24,7 @@ from work_manager import (
 class WorkManagerTestApp(App):
     POLICIES = ("keep", "replace", "append", "append_or_replace", "update")
     NETWORK_TYPES = ("connected", "unmetered", "not_roaming", "not_required")
+    EXPEDITED_POLICIES = ("run_as_non_expedited", "drop")
 
     def build(self):
         self.work_name = "heartbeat_once"
@@ -32,6 +33,7 @@ class WorkManagerTestApp(App):
         self.backoff_policy = "exponential"
         self.tag = "demo_tag"
         self.network_type = "connected"
+        self.expedited_policy = "run_as_non_expedited"
 
         root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
@@ -78,6 +80,15 @@ class WorkManagerTestApp(App):
         unique_row.add_widget(Label(text="non-unique", size_hint_x=0.65))
         root.add_widget(unique_row)
 
+        expedited_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        expedited_row.add_widget(Label(text="Expedited:", size_hint_x=0.35))
+        self.expedited_cb = CheckBox(activated=False, size_hint_x=None, width=44)
+        expedited_row.add_widget(self.expedited_cb)
+        self.expedited_button = Button(text=self.expedited_policy, size_hint_x=0.65)
+        self.expedited_button.bind(on_press=self.toggle_expedited_policy)
+        expedited_row.add_widget(self.expedited_button)
+        root.add_widget(expedited_row)
+
         network_type_row = BoxLayout(
             orientation="horizontal", size_hint_y=None, height=44)
         network_type_row.add_widget(
@@ -116,6 +127,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
+        root.add_widget(self._button("Schedule expedited (no delay, 5s run)", self.schedule_expedited))
         root.add_widget(self._button("Schedule chain (2 steps, 8s each)", self.schedule_chain))
         root.add_widget(self._button("Schedule tagged work (10s)", self.schedule_tagged))
         root.add_widget(self._button("Cancel work", self.cancel_work))
@@ -126,7 +138,7 @@ class WorkManagerTestApp(App):
         self.status = Label(
             text="Status: (not queried)",
             size_hint_y=None,
-            height=175,
+            height=200,
             halign="left",
             valign="top",
         )
@@ -174,6 +186,13 @@ class WorkManagerTestApp(App):
         self.policy = self.POLICIES[(index + 1) % len(self.POLICIES)]
         self.policy_button.text = self.policy
 
+    def toggle_expedited_policy(self, _=None, touch=None):
+        index = (self.EXPEDITED_POLICIES.index(self.expedited_policy)
+                 if self.expedited_policy in self.EXPEDITED_POLICIES else -1)
+        self.expedited_policy = self.EXPEDITED_POLICIES[
+            (index + 1) % len(self.EXPEDITED_POLICIES)]
+        self.expedited_button.text = self.expedited_policy
+
     def toggle_network_type(self, _=None, touch=None):
         index = self.NETWORK_TYPES.index(self.network_type)
         self.network_type = self.NETWORK_TYPES[
@@ -216,6 +235,14 @@ class WorkManagerTestApp(App):
     def is_unique(self):
         checkbox = getattr(self, "unique_cb", None)
         return not bool(checkbox and checkbox.activated)
+
+    @property
+    def expedited_options(self):
+        checkbox = getattr(self, "expedited_cb", None)
+        return {
+            "expedited": bool(checkbox and checkbox.activated),
+            "expedited_policy": self.expedited_policy,
+        }
 
     @property
     def constraints(self):
@@ -262,6 +289,7 @@ class WorkManagerTestApp(App):
                 policy=self.policy,
                 unique=self.is_unique,
                 **constraints,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled one-time heartbeat: {} ({}, policy={})".format(
                 self.current_name, self._constraint_text(constraints), self.policy))
@@ -280,6 +308,7 @@ class WorkManagerTestApp(App):
                 policy=self.policy,
                 unique=self.is_unique,
                 **constraints,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled periodic heartbeat: heartbeat_periodic ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
@@ -298,6 +327,7 @@ class WorkManagerTestApp(App):
                 policy=self.policy,
                 unique=self.is_unique,
                 **constraints,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled failing script: failing_once ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
@@ -316,6 +346,7 @@ class WorkManagerTestApp(App):
                 policy=self.policy,
                 unique=self.is_unique,
                 **constraints,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled slow heartbeat: slow_once ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
@@ -334,6 +365,7 @@ class WorkManagerTestApp(App):
                 policy=self.policy,
                 unique=self.is_unique,
                 **constraints,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled result worker: result_once ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
@@ -353,9 +385,29 @@ class WorkManagerTestApp(App):
                 unique=self.is_unique,
                 **self.constraints,
                 **backoff,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled retry worker: retry_once ({} / {}s)".format(
                 backoff["backoff_policy"], backoff["backoff_delay_seconds"]))
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def schedule_expedited(self, _=None, touch=None):
+        constraints = self.constraints
+        options = self.expedited_options
+        try:
+            Work(
+                name="expedited_once",
+                script="workers/heartbeat.py",
+                args={"message": "expedited work", "sleep_seconds": 5},
+                policy="replace",
+                unique=self.is_unique,
+                **constraints,
+                **options,
+            ).schedule()
+            self._note("Scheduled expedited work: expedited_once ({} / {})".format(
+                options["expedited_policy"], self._constraint_text(constraints)))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
@@ -395,6 +447,7 @@ class WorkManagerTestApp(App):
                 unique=self.is_unique,
                 **self.constraints,
                 **self.tags,
+                **self.expedited_options,
             ).schedule()
             self._note("Scheduled tagged work: tagged_once (tag={})".format(tag))
         except Exception as exc:
@@ -475,6 +528,7 @@ class WorkManagerTestApp(App):
             for key, work_name, work_unique in (
                     ("one_time", name, unique),
                     ("periodic", "heartbeat_periodic", unique),
+                    ("expedited", "expedited_once", unique),
                     ("chain", "chain_once", True)):
                 try:
                     result[key] = get_work_info(work_name, unique=work_unique)
@@ -498,17 +552,19 @@ class WorkManagerTestApp(App):
                 break
         if latest is None:
             return
-        for key in ("one_time", "periodic", "chain", "tag"):
+        for key in ("one_time", "periodic", "expedited", "chain", "tag"):
             value = latest.get(key)
             if isinstance(value, Exception):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
         self.status.text = (
-            "Status: {} ({}): {}\nPeriodic: {}\nChain: {}\nTag {}: {}".format(
+            "Status: {} ({}): {}\nPeriodic: {}\nExpedited: {}\n"
+            "Chain: {}\nTag {}: {}".format(
                 latest.get("name", self.current_name),
                 latest.get("mode", "unique"),
                 self._format_info(latest.get("one_time")),
                 self._format_info(latest.get("periodic")),
+                self._format_info(latest.get("expedited")),
                 self._format_info(latest.get("chain")),
                 latest.get("tag_name", self.current_tag),
                 self._format_infos(latest.get("tag")),

@@ -1,11 +1,16 @@
 package org.kivy.android;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
+import android.os.Build;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.concurrent.futures.CallbackToFutureAdapter;
 import androidx.work.Data;
+import androidx.work.ForegroundInfo;
 import androidx.work.ListenableWorker.Result;
 import androidx.work.WorkerParameters;
 import androidx.work.multiprocess.RemoteListenableWorker;
@@ -52,6 +57,46 @@ public abstract class PythonWorker extends RemoteListenableWorker {
 
     /** WorkRequest Data key for the script path, relative to the p4a app root. */
     public static final String ARGUMENT_WORKER_ENTRYPOINT = "PYTHON_WORK_SCRIPT";
+
+    /** Expedited work runs as a foreground service and needs a notification. */
+    private static final String FOREGROUND_CHANNEL_ID = "org.kivy.p4a.worker";
+    private static final int FOREGROUND_NOTIFICATION_ID = 0x50594b;
+
+    /**
+     * Provide the notification WorkManager shows for expedited work.
+     *
+     * ListenableWorker's default implementation fails its future with an
+     * IllegalStateException, so without this override an expedited request is
+     * marked FAILED before the Python script ever starts. Normal work never
+     * calls this method.
+     */
+    @Override
+    public ListenableFuture<ForegroundInfo> getForegroundInfoAsync() {
+        return CallbackToFutureAdapter.getFuture(completer -> {
+            Context context = getApplicationContext();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        FOREGROUND_CHANNEL_ID, "Background work",
+                        NotificationManager.IMPORTANCE_LOW);
+                NotificationManager manager = (NotificationManager)
+                        context.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (manager != null) {
+                    manager.createNotificationChannel(channel);
+                }
+            }
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(context, FOREGROUND_CHANNEL_ID)
+                    : new Notification.Builder(context);
+            Notification notification = builder
+                    .setContentTitle("Background work")
+                    .setContentText("A Python worker is running")
+                    .setSmallIcon(context.getApplicationInfo().icon)
+                    .setOngoing(true)
+                    .build();
+            completer.set(new ForegroundInfo(FOREGROUND_NOTIFICATION_ID, notification));
+            return TAG + " foreground info";
+        });
+    }
 
     private String androidPrivate;
     private String androidArgument;
