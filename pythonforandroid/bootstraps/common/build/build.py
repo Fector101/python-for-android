@@ -570,6 +570,49 @@ main.py that loads it.''')
             base_service_class=base_service_class,
         )
 
+    worker_names = []
+    for spec in args.workers:
+        parts = spec.split(':')
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(
+                'Invalid --worker value {!r}. Expected NAME:PATH_TO_PY'.format(spec)
+            )
+        name, entrypoint = parts
+        if not name.replace('_', '').isalnum() or name[0].isdigit():
+            raise ValueError(
+                'Worker name {!r} must be a Java identifier (letters, digits '
+                'and underscores, not starting with a digit)'.format(name)
+            )
+        if name in worker_names:
+            raise ValueError('Duplicate worker name {!r}'.format(name))
+
+        worker_names.append(name)
+        worker_target_path = (
+            'src/main/java/{}/{}Worker.java'.format(
+                args.package.replace('.', '/'), name.capitalize()
+            )
+        )
+        render(
+            'Worker.tmpl.java',
+            worker_target_path,
+            name=name,
+            entrypoint=entrypoint,
+            args=args,
+        )
+
+        worker_service_target_path = (
+            'src/main/java/{}/{}WorkerService.java'.format(
+                args.package.replace('.', '/'), name.capitalize()
+            )
+        )
+        render(
+            'WorkerService.tmpl.java',
+            worker_service_target_path,
+            name=name,
+            entrypoint=entrypoint,
+            args=args,
+        )
+
     # Find the SDK directory and target API
     with open('project.properties', 'r') as fileh:
         target = fileh.read().strip()
@@ -587,6 +630,10 @@ main.py that loads it.''')
     with open('local.properties', 'r') as fileh:
         sdk_dir = fileh.read().strip()
     sdk_dir = sdk_dir[8:]
+
+    # WorkManager 2.7+ requires API 31. Older versions are kept for older
+    # projects, but test builds should target a current API.
+    work_manager_version = '2.9.0' if android_api >= 31 else '2.6.0'
 
     # Try to build with the newest available build tools
     ignored = {".DS_Store", ".ds_store"}
@@ -617,6 +664,7 @@ main.py that loads it.''')
         "args": args,
         "service": service,
         "service_data": service_data,
+        "worker_names": worker_names,
         "android_api": android_api,
         "debug": "debug" in args.build_mode,
         "native_services": args.native_services,
@@ -646,6 +694,7 @@ main.py that loads it.''')
         build_tools_version=build_tools_version,
         debug_build="debug" in args.build_mode,
         is_library=(get_bootstrap_name() == 'service_library'),
+        work_manager_version=work_manager_version,
         )
 
     # gradle properties
@@ -903,6 +952,9 @@ tools directory of the Android SDK.
     ap.add_argument('--service', dest='services', action='append', default=[],
                     help='Declare a new service entrypoint: '
                          'NAME:PATH_TO_PY[:foreground]')
+    ap.add_argument('--worker', dest='workers', action='append', default=[],
+                    help='Declare a new WorkManager worker entrypoint: '
+                         'NAME:PATH_TO_PY')
     ap.add_argument('--native-service', dest='native_services', action='append', default=[],
                     help='Declare a new native service: '
                          'package.name.service')
@@ -1168,6 +1220,11 @@ def parse_args_and_make_package(args=None):
               '--launcher (SDL2/SDL3 bootstrap only)' +
               'to have something to launch inside the .apk!')
         sys.exit(1)
+
+    if args.workers and not args.enable_androidx:
+        print('WARNING: Enabling androidx for worker support')
+        args.enable_androidx = True
+
     make_package(args)
 
     return args

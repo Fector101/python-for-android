@@ -102,6 +102,12 @@
         {% for name in native_services %}
         <service android:name="{{ name }}" />
         {% endfor %}
+        {% for name in worker_names %}
+        <service android:name="{{ args.package }}.{{ name|capitalize }}WorkerService"
+                 android:process=":worker_{{ name }}"
+                 android:exported="false"
+                 android:stopWithTask="true" />
+        {% endfor %}
 
     {% for a in args.add_activity  %}
     <activity android:name="{{ a }}"></activity>

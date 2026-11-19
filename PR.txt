@@ -1,0 +1,69 @@
+Android: add Python WorkManager worker support
+
+## Summary
+
+Adds first-class support for running Python code as a WorkManager worker.
+
+A new `--worker=NAME:PATH` build argument generates a `RemoteListenableWorker`
+subclass plus the matching `RemoteWorkerService` for
+`androidx.work:work-multiprocess`; the configured script runs in its own
+`:worker_<name>` process via `runpy.run_path()`.
+
+## Why
+
+p4a apps can currently reach background work only through a p4a `Service`
+started from Java or Python. WorkManager is the Android-recommended API for
+deferrable, guaranteed background work (constraints, retries, chaining,
+doze-awareness), and this exposes it directly to Python.
+
+## Changes
+
+- `build.py`: parse `--worker=NAME:PATH`, collect worker definitions, and wire
+  generation into the SDL bootstrap.
+- `start.c`: resolve the worker entrypoint, set `PYTHON_SERVICE_ARGUMENT` (the
+  WorkRequest argument payload) and `sys.p4a_worker_entrypoint`, and run the
+  script with `runpy.run_path()` so `SystemExit(code)` maps to a WorkManager
+  result.
+- New `PythonWorker.java`: base class extending `RemoteListenableWorker`,
+  exposing `getWorkerContext()` so libraries can obtain a valid `Context` from
+  the worker process.
+- New `Worker.tmpl.java` / `WorkerService.tmpl.java`: generated static API and
+  `RemoteWorkerService` host.
+- `build.tmpl.gradle` + manifest templates: add
+  `androidx.work:work-multiprocess` and register the generated worker service.
+- `PythonService.java`: keep context lookup correct alongside workers.
+
+## How it works
+
+```
+Work.schedule()  ->  <Name>Worker (RemoteListenableWorker)
+                 ->  WorkManager IPC (work-multiprocess)
+                 ->  <Name>WorkerService (RemoteWorkerService)
+                 ->  PythonWorker.nativeStart()
+                 ->  runpy.run_path(script) in :worker_<name>
+```
+
+The generated `<service>` is AndroidX multiprocess plumbing, not a p4a app
+`Service`; no Python `startService()` is involved.
+
+## Companion app
+
+`workmanager_test/` is included as a reference for the tested configuration.
+Only `android_notify/config.py` is included from the vendored `android_notify`
+package; the rest is unchanged upstream `android_notify` 1.62.0, so the folder
+is a change reference and is not a standalone buildable app on its own.
+
+It schedules a heartbeat and a deliberately failing worker, and posts a
+notification from the worker process.
+
+## Verification
+
+Device-tested on Android API 36 / arm64-v8a: a heartbeat worker returns
+`SUCCEEDED`, a deliberately failing worker returns `FAILED` (exit 0 / 3), and
+a notification posted from the worker process appears in
+`dumpsys notification`.
+
+## Related
+
+Revives the approach from closed PR #2613, ported to the current SDL3/Gradle
+layout.

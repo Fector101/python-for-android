@@ -1,0 +1,7 @@
+.buildozer/
+bin/
+__pycache__/
+.pytest_cache/
+.benchmarks/
+*.pyc
+*.apk

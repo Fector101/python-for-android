@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -195,8 +196,71 @@ char *setup_symlinks() {
 }
 
 
-/* int main(int argc, char **argv) { */
-int main(int argc, char *argv[]) {
+/*
+ * Worker scripts are executed through runpy so that SystemExit(code) becomes a
+ * return value instead of terminating the remote worker process before Java
+ * can complete the WorkManager future. runpy also handles the .pyc files that
+ * newer p4a builds prefer over .py sources.
+ */
+#if PY_MAJOR_VERSION >= 3
+static int run_worker_script(const char *worker_entrypoint) {
+  const char *command =
+      "import os, runpy, sys\n"
+      "os.environ['ANDROID_ENTRYPOINT'] = sys.p4a_worker_entrypoint\n"
+      "sys.argv = [sys.p4a_worker_entrypoint]\n"
+      "sys.p4a_worker_exit_code = 0\n"
+      "try:\n"
+      "    runpy.run_path(sys.p4a_worker_entrypoint, run_name='__main__')\n"
+      "except SystemExit as _p4a_exit:\n"
+      "    _p4a_code = _p4a_exit.code\n"
+      "    if _p4a_code is None:\n"
+      "        sys.p4a_worker_exit_code = 0\n"
+      "    elif isinstance(_p4a_code, int):\n"
+      "        sys.p4a_worker_exit_code = _p4a_code\n"
+      "    else:\n"
+      "        sys.p4a_worker_exit_code = 1\n"
+      "        print(_p4a_code, file=sys.stderr)\n";
+
+  /* os.environ is a snapshot from interpreter startup, so a C setenv() after
+   * Py_Initialize() is invisible to Python. Hand the resolved path over via
+   * sys and mirror it into os.environ before running the script. */
+  PyObject *py_entrypoint = PyUnicode_FromString(worker_entrypoint);
+  if (py_entrypoint == NULL) {
+    PyErr_Clear();
+    return 1;
+  }
+  PySys_SetObject("p4a_worker_entrypoint", py_entrypoint);
+  Py_DECREF(py_entrypoint);
+
+  if (PyRun_SimpleString(command) != 0) {
+    return 1;
+  }
+
+  int result = 0;
+  PyObject *code = PySys_GetObject("p4a_worker_exit_code");
+  if (code != NULL && code != Py_None) {
+    if (PyLong_Check(code)) {
+      long value = PyLong_AsLong(code);
+      if (PyErr_Occurred()) {
+        PyErr_Clear();
+        result = 1;
+      } else {
+        result = (int)value;
+      }
+    } else {
+      result = 1;
+    }
+  }
+  return result;
+}
+#endif
+
+/*
+ * run_python() is the shared body for the app entry point, p4a services and
+ * WorkManager workers. call_exit=false is used by workers, where returning the
+ * status to Java is preferable to terminating the whole process here.
+ */
+static int run_python(int argc, char *argv[], bool call_exit) {
 
   char *env_argument = NULL;
   char *env_entrypoint = NULL;
@@ -455,6 +519,11 @@ int main(int argc, char *argv[]) {
   }
   // LOGP("Entrypoint is:");
   // LOGP(entrypoint);
+
+  /* runpy must receive the resolved path: p4a packages worker scripts as .pyc,
+   * so the requested .py name does not exist on the device. */
+  setenv("ANDROID_ENTRYPOINT", entrypoint, 1);
+
   fd = fopen(entrypoint, "r");
   if (fd == NULL) {
     LOGP("Open the entrypoint failed");
@@ -463,33 +532,57 @@ int main(int argc, char *argv[]) {
   }
   /* run python !
    */
-  ret = PyRun_SimpleFile(fd, entrypoint);
-  fclose(fd);
+#if PY_MAJOR_VERSION >= 3
+  if (!call_exit) {
+    /* runpy opens the script itself; it understands .py and .pyc. */
+    fclose(fd);
+    ret = run_worker_script(entrypoint);
+  } else {
+#endif
+    ret = PyRun_SimpleFile(fd, entrypoint);
+    fclose(fd);
 
-  if (PyErr_Occurred() != NULL) {
-    ret = 1;
-    PyErr_Print(); /* This exits with the right code if SystemExit. */
-    PyObject *f = PySys_GetObject("stdout");
-    if (PyFile_WriteString("\n", f))
-      PyErr_Clear();
-  }
-
-  LOGP("Python for android ended.");
-
-#if PY_MAJOR_VERSION < 3
-  Py_Finalize();
-  LOGP("Unexpectedly reached Py_FinalizeEx(), but was successful.");
-#else
-  if (Py_FinalizeEx() != 0) {  // properly check success on Python 3
-    LOGP("Unexpectedly reached Py_FinalizeEx(), and got error!");
+    if (PyErr_Occurred() != NULL) {
+      ret = 1;
+      PyErr_Print();
+      PyObject *f = PySys_GetObject("stdout");
+      if (f != NULL && PyFile_WriteString("\n", f))
+        PyErr_Clear();
+    }
+#if PY_MAJOR_VERSION >= 3
   }
 #endif
 
-  exit(ret);
+  LOGP("Python for android ended.");
+
+  /* Regular p4a entry points must terminate the process: incomplete CPython
+   * shutdown has caused problems on restart. Workers instead need to hand the
+   * exit status back to Java so WorkManager can mark the work succeeded/failed;
+   * their disposable process is stopped by WorkerService.onDestroy(). */
+  if (call_exit) {
+    char terminatecmd[256];
+    snprintf(terminatecmd, sizeof(terminatecmd),
+             "import sys; sys.exit(%d)\n", ret);
+    PyRun_SimpleString(terminatecmd);
+    LOGP("Unexpectedly reached python finalization");
+  }
+
+#if PY_MAJOR_VERSION < 3
+  Py_Finalize();
+#else
+  if (Py_FinalizeEx() != 0) {  // properly check success on Python 3
+    LOGP("Py_FinalizeEx() returned an error!");
+  }
+#endif
+
   return ret;
 }
 
-JNIEXPORT void JNICALL Java_org_kivy_android_PythonService_nativeStart(
+int main(int argc, char *argv[]) {
+  return run_python(argc, argv, true);
+}
+
+static jint native_start(
     JNIEnv *env,
     jobject thiz,
     jstring j_android_private,
@@ -498,7 +591,8 @@ JNIEXPORT void JNICALL Java_org_kivy_android_PythonService_nativeStart(
     jstring j_python_name,
     jstring j_python_home,
     jstring j_python_path,
-    jstring j_arg) {
+    jstring j_arg,
+    bool call_exit) {
   jboolean iscopy;
   const char *android_private =
       (*env)->GetStringUTFChars(env, j_android_private, &iscopy);
@@ -526,10 +620,42 @@ JNIEXPORT void JNICALL Java_org_kivy_android_PythonService_nativeStart(
   setenv("P4A_BOOTSTRAP", bootstrap_name, 1);
 
   char *argv[] = {"."};
-  /* ANDROID_ARGUMENT points to service subdir,
-   * so main() will run main.py from this dir
+  /* ANDROID_ARGUMENT points to the app root, so run_python() resolves the
+   * entrypoint relative to the unpacked files/app directory.
    */
-  main(1, argv);
+  return run_python(1, argv, call_exit);
+}
+
+JNIEXPORT jint JNICALL Java_org_kivy_android_PythonService_nativeStart(
+    JNIEnv *env,
+    jobject thiz,
+    jstring j_android_private,
+    jstring j_android_argument,
+    jstring j_service_entrypoint,
+    jstring j_python_name,
+    jstring j_python_home,
+    jstring j_python_path,
+    jstring j_arg) {
+  LOGP("Entering org.kivy.android.PythonService.nativeStart");
+  return native_start(env, thiz, j_android_private, j_android_argument,
+                      j_service_entrypoint, j_python_name, j_python_home,
+                      j_python_path, j_arg, true);
+}
+
+JNIEXPORT jint JNICALL Java_org_kivy_android_PythonWorker_nativeStart(
+    JNIEnv *env,
+    jobject thiz,
+    jstring j_android_private,
+    jstring j_android_argument,
+    jstring j_service_entrypoint,
+    jstring j_python_name,
+    jstring j_python_home,
+    jstring j_python_path,
+    jstring j_arg) {
+  LOGP("Entering org.kivy.android.PythonWorker.nativeStart");
+  return native_start(env, thiz, j_android_private, j_android_argument,
+                      j_service_entrypoint, j_python_name, j_python_home,
+                      j_python_path, j_arg, false);
 }
 
 #if defined(BOOTSTRAP_NAME_WEBVIEW) || defined(BOOTSTRAP_NAME_SERVICEONLY)

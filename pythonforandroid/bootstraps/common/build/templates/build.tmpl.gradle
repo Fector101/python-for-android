@@ -128,5 +128,11 @@ dependencies {
     {% if args.presplash_lottie %}
     implementation 'com.airbnb.android:lottie:6.1.0'
     {%- endif %}
+    {%- if args.workers %}
+    implementation 'androidx.annotation:annotation:1.3.0'
+    implementation 'androidx.concurrent:concurrent-futures:1.1.0'
+    implementation 'androidx.work:work-runtime:{{ work_manager_version }}'
+    implementation 'androidx.work:work-multiprocess:{{ work_manager_version }}'
+    {%- endif %}
 }
 
