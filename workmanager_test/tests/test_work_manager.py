@@ -36,6 +36,11 @@ def java(monkeypatch):
             calls["getStatus"] = args
             return "SUCCEEDED"
 
+        @staticmethod
+        def getInfoJson(*args):
+            calls["getInfoJson"] = args
+            return calls.get("info_json", '{"found":false,"infos":[]}')
+
     def fake_autoclass(name):
         calls.setdefault("autoclass", []).append(name)
         return FakeWorker
@@ -169,3 +174,95 @@ def test_args_must_be_json_serialisable():
             script="workers/heartbeat.py",
             args={"bad": object()},
         ).argument_json()
+
+
+def test_get_work_info_parses_all_fields(java):
+    _, calls = java
+    calls["info_json"] = json.dumps({
+        "found": True,
+        "infos": [{
+            "id": "uuid-1",
+            "state": "RUNNING",
+            "runAttemptCount": 2,
+            "generation": 3,
+            "tags": ["ScriptWorker", "heartbeat_once"],
+            "output": {"message": "done", "count": 4},
+            "progress": {"percent": 50},
+            "initialDelayMillis": 10000,
+            "nextScheduleTimeMillis": 1763560000000,
+            "stopReason": 0,
+            "stopReasonName": "NOT_STOPPED",
+        }],
+    })
+
+    info = work_manager.get_work_info("heartbeat_once")
+
+    assert info is not None
+    assert info.id == "uuid-1"
+    assert info.state == "RUNNING"
+    assert info.run_attempt_count == 2
+    assert info.generation == 3
+    assert "heartbeat_once" in info.tags
+    assert info.output == {"message": "done", "count": 4}
+    assert info.progress == {"percent": 50}
+    assert info.initial_delay_ms == 10000
+    assert info.next_schedule_time_ms == 1763560000000
+    assert info.stop_reason_name == "NOT_STOPPED"
+    assert calls["getInfoJson"] == (calls["getInfoJson"][0], "heartbeat_once")
+
+
+def test_get_work_info_prefers_active_row(java):
+    _, calls = java
+    calls["info_json"] = json.dumps({
+        "found": True,
+        "infos": [
+            {"state": "SUCCEEDED", "runAttemptCount": 1},
+            {"state": "ENQUEUED", "runAttemptCount": 1,
+             "stopReasonName": "CONSTRAINT_CHARGING"},
+            {"state": "FAILED", "runAttemptCount": 1},
+        ],
+    })
+
+    info = work_manager.get_work_info("multi")
+
+    assert info.state == "ENQUEUED"
+    assert info.stop_reason_name == "CONSTRAINT_CHARGING"
+
+
+def test_get_work_info_when_not_found(java):
+    _, calls = java
+    calls["info_json"] = '{"found":false,"infos":[]}'
+
+    details = work_manager.get_work_infos("missing")
+
+    assert details.found is False
+    assert details.infos == ()
+    assert details.error is None
+    assert work_manager.get_work_info("missing") is None
+
+
+def test_get_work_info_reports_java_error(java):
+    _, calls = java
+    calls["info_json"] = '{"found":false,"error":"timeout"}'
+
+    details = work_manager.get_work_infos("slow")
+
+    assert details.error == "timeout"
+    assert work_manager.get_work_info("slow") is None
+
+
+def test_get_work_info_rejects_invalid_json(java):
+    _, calls = java
+    calls["info_json"] = "not json"
+
+    with pytest.raises(ValueError, match="not JSON"):
+        work_manager.get_work_infos("bad")
+
+
+def test_work_object_exposes_work_info(java):
+    _, calls = java
+    calls["info_json"] = '{"found":true,"infos":[{"state":"SUCCEEDED"}]}'
+    work = work_manager.Work(name="x", script="workers/heartbeat.py")
+
+    assert work.get_work_info().state == "SUCCEEDED"
+    assert work.get_work_infos().found is True

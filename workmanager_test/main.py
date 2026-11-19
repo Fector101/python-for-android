@@ -8,7 +8,7 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
-from work_manager import Work, cancel, get_info
+from work_manager import Work, cancel, get_work_info
 
 
 class WorkManagerTestApp(App):
@@ -49,7 +49,7 @@ class WorkManagerTestApp(App):
         self.status = Label(
             text="Status: (not queried)",
             size_hint_y=None,
-            height=80,
+            height=110,
             halign="left",
             valign="top",
         )
@@ -159,17 +159,41 @@ class WorkManagerTestApp(App):
             self._note("Cancel failed: {!r}".format(exc))
         self.refresh_status()
 
+    @staticmethod
+    def _format_info(info):
+        if info is None:
+            return "none"
+        parts = [
+            "state={}".format(info.state),
+            "attempt={}".format(info.run_attempt_count),
+            "gen={}".format(info.generation),
+            "stop={}".format(info.stop_reason_name),
+        ]
+        if info.next_schedule_time_ms:
+            parts.append("next_ms={}".format(info.next_schedule_time_ms))
+        if info.tags:
+            parts.append("tags={}".format(",".join(info.tags)))
+        if info.output:
+            parts.append("output={}".format(info.output))
+        if info.progress:
+            parts.append("progress={}".format(info.progress))
+        return " ".join(parts)
+
     def refresh_status(self):
         try:
-            one_time = get_info(self.current_name)
+            one_time = get_work_info(self.current_name)
         except Exception as exc:
-            one_time = "ERROR: {}".format(exc)
+            one_time = None
+            self._note("Status query failed: {!r}".format(exc))
         try:
-            periodic = get_info("heartbeat_periodic")
+            periodic = get_work_info("heartbeat_periodic")
         except Exception as exc:
-            periodic = "ERROR: {}".format(exc)
-        self.status.text = "Status: {}={} periodic={}".format(
-            self.current_name, one_time, periodic
+            periodic = None
+            self._note("Status query failed: {!r}".format(exc))
+        self.status.text = "Status: {}: {}\nPeriodic: {}".format(
+            self.current_name,
+            self._format_info(one_time),
+            self._format_info(periodic),
         )
 
 

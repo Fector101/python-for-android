@@ -14,11 +14,38 @@ from __future__ import annotations
 import json
 import posixpath
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 _MAX_SCRIPT_LENGTH = 120  # start.c ENTRYPOINT_MAXLEN is 128.
+_TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
+
+
+@dataclass(frozen=True)
+class WorkInfo:
+    """Read-only snapshot of one WorkManager work-info row."""
+
+    id: str = ""
+    state: str = "UNKNOWN"
+    run_attempt_count: int = 0
+    generation: int = 0
+    tags: tuple = ()
+    output: Dict[str, Any] = field(default_factory=dict)
+    progress: Dict[str, Any] = field(default_factory=dict)
+    initial_delay_ms: int = 0
+    next_schedule_time_ms: int = 0
+    stop_reason: int = 0
+    stop_reason_name: str = "NOT_STOPPED"
+
+
+@dataclass(frozen=True)
+class WorkInfos:
+    """All work-info rows returned for a unique work name."""
+
+    found: bool = False
+    infos: tuple = ()
+    error: Optional[str] = None
 
 
 def _autoclass(name: str):
@@ -170,6 +197,12 @@ class Work:
     def get_info(self) -> str:
         return get_info(self.name, worker_name=self.worker_name)
 
+    def get_work_info(self) -> Optional[WorkInfo]:
+        return get_work_info(self.name, worker_name=self.worker_name)
+
+    def get_work_infos(self) -> WorkInfos:
+        return get_work_infos(self.name, worker_name=self.worker_name)
+
 
 def schedule(name: str, script: str, **kwargs: Any) -> Work:
     """Convenience wrapper around ``Work(...).schedule()``."""
@@ -191,3 +224,68 @@ def get_info(name: str, worker_name: str = "script") -> str:
     return _worker_class(_validate_worker_name(worker_name)).getStatus(
         _context(), name
     )
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _parse_info_json(raw: str) -> WorkInfos:
+    """Parse the JSON produced by ``ScriptWorker.getInfoJson``."""
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Work info response was not JSON: {!r}".format(raw)) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Work info response was not a JSON object")
+
+    rows = []
+    for item in payload.get("infos") or []:
+        if not isinstance(item, dict):
+            continue
+        tags = item.get("tags") or []
+        rows.append(WorkInfo(
+            id=str(item.get("id", "")),
+            state=str(item.get("state", "UNKNOWN")),
+            run_attempt_count=_as_int(item.get("runAttemptCount")),
+            generation=_as_int(item.get("generation")),
+            tags=tuple(str(tag) for tag in tags) if isinstance(tags, list) else (),
+            output=_as_dict(item.get("output")),
+            progress=_as_dict(item.get("progress")),
+            initial_delay_ms=_as_int(item.get("initialDelayMillis")),
+            next_schedule_time_ms=_as_int(item.get("nextScheduleTimeMillis")),
+            stop_reason=_as_int(item.get("stopReason")),
+            stop_reason_name=str(item.get("stopReasonName", "UNKNOWN")),
+        ))
+    error = payload.get("error")
+    return WorkInfos(
+        found=bool(payload.get("found")),
+        infos=tuple(rows),
+        error=str(error) if error else None,
+    )
+
+
+def get_work_infos(name: str, worker_name: str = "script") -> WorkInfos:
+    """Return every WorkManager work-info row for ``name``."""
+    raw = _worker_class(_validate_worker_name(worker_name)).getInfoJson(
+        _context(), name
+    )
+    return _parse_info_json(raw)
+
+
+def get_work_info(name: str, worker_name: str = "script") -> Optional[WorkInfo]:
+    """Return the active row for ``name``, or the newest row if all finished."""
+    infos = get_work_infos(name, worker_name=worker_name).infos
+    if not infos:
+        return None
+    for info in infos:
+        if info.state not in _TERMINAL_STATES:
+            return info
+    return infos[0]
