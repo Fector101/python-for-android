@@ -11,7 +11,14 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
-from work_manager import Work, cancel, cancel_all, get_work_info
+from work_manager import (
+    Work,
+    cancel,
+    cancel_all,
+    cancel_by_tag,
+    get_work_info,
+    get_work_infos_by_tag,
+)
 
 
 class WorkManagerTestApp(App):
@@ -20,6 +27,7 @@ class WorkManagerTestApp(App):
         self.message = "hello from WorkManager"
         self.policy = "replace"
         self.backoff_policy = "exponential"
+        self.tag = "demo_tag"
 
         root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
@@ -62,6 +70,12 @@ class WorkManagerTestApp(App):
         backoff_row.add_widget(self.backoff_input)
         root.add_widget(backoff_row)
 
+        tag_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        tag_row.add_widget(Label(text="Tag:", size_hint_x=0.25))
+        self.tag_input = TextInput(text=self.tag, multiline=False, size_hint_x=0.75)
+        tag_row.add_widget(self.tag_input)
+        root.add_widget(tag_row)
+
         root.add_widget(self._button("Schedule one-time (10s)", self.schedule_once))
         root.add_widget(self._button("Schedule periodic (15m)", self.schedule_periodic))
         root.add_widget(self._button("Schedule failing script (10s)", self.schedule_failing))
@@ -69,14 +83,16 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
         root.add_widget(self._button("Schedule chain (2 steps, 8s each)", self.schedule_chain))
+        root.add_widget(self._button("Schedule tagged work (10s)", self.schedule_tagged))
         root.add_widget(self._button("Cancel work", self.cancel_work))
+        root.add_widget(self._button("Cancel by tag", self.cancel_by_tag_work))
         root.add_widget(self._button("Cancel all", self.cancel_all_work))
         root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
 
         self.status = Label(
             text="Status: (not queried)",
             size_hint_y=None,
-            height=140,
+            height=175,
             halign="left",
             valign="top",
         )
@@ -98,6 +114,7 @@ class WorkManagerTestApp(App):
         self._poll_now = threading.Event()
         self._stop_polling = threading.Event()
         self._poll_name = self.current_name
+        self._poll_tag = self.current_tag
         self._poll_thread = threading.Thread(
             target=self._poll_worker,
             name="work-status-poll",
@@ -139,6 +156,15 @@ class WorkManagerTestApp(App):
     def current_name(self):
         name = self.name_input.text.strip() if self.name_input else self.work_name
         return name or self.work_name
+
+    @property
+    def current_tag(self):
+        tag = self.tag_input.text.strip() if self.tag_input else self.tag
+        return tag or self.tag
+
+    @property
+    def tags(self):
+        return {"tags": [self.current_tag]}
 
     @property
     def constraints(self):
@@ -273,16 +299,44 @@ class WorkManagerTestApp(App):
                 delay_seconds=2,
                 policy=self.policy,
                 **self.constraints,
+                **self.tags,
             ).then(Work(
                 name="chain_step_2",
                 script="workers/chain.py",
                 args={"step": 2, "message": "chain step 2", "sleep_seconds": 8},
                 policy=self.policy,
                 **self.constraints,
+                **self.tags,
             )).schedule()
             self._note("Scheduled chain: chain_once (2 steps)")
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def schedule_tagged(self, _=None, touch=None):
+        tag = self.current_tag
+        try:
+            Work(
+                name="tagged_once",
+                script="workers/heartbeat.py",
+                args={"message": "tagged work", "sleep_seconds": 8},
+                delay_seconds=2,
+                policy="replace",
+                **self.constraints,
+                **self.tags,
+            ).schedule()
+            self._note("Scheduled tagged work: tagged_once (tag={})".format(tag))
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def cancel_by_tag_work(self, _=None, touch=None):
+        tag = self.current_tag
+        try:
+            cancel_by_tag(tag)
+            self._note("Cancelled by tag: {}".format(tag))
+        except Exception as exc:
+            self._note("Cancel by tag failed: {!r}".format(exc))
         self.refresh_status()
 
     def cancel_work(self, _=None, touch=None):
@@ -321,9 +375,16 @@ class WorkManagerTestApp(App):
             parts.append("progress={}".format(info.progress))
         return " ".join(parts)
 
+    @staticmethod
+    def _format_infos(infos):
+        if not infos:
+            return "none"
+        return " | ".join(WorkManagerTestApp._format_info(info) for info in infos)
+
     def refresh_status(self):
         """Ask the polling thread for an update; never blocks the UI thread."""
         self._poll_name = self.current_name
+        self._poll_tag = self.current_tag
         self._poll_now.set()
 
     def _poll_worker(self):
@@ -333,7 +394,7 @@ class WorkManagerTestApp(App):
             if self._stop_polling.is_set():
                 break
             name = self._poll_name
-            result = {"name": name}
+            result = {"name": name, "tag_name": self._poll_tag}
             for key, work_name in (("one_time", name),
                                    ("periodic", "heartbeat_periodic"),
                                    ("chain", "chain_once")):
@@ -342,6 +403,10 @@ class WorkManagerTestApp(App):
                 except Exception as exc:
                     # A failed query must not kill the polling thread.
                     result[key] = exc
+            try:
+                result["tag"] = get_work_infos_by_tag(self._poll_tag).infos
+            except Exception as exc:
+                result["tag"] = exc
             self._status_queue.put(result)
 
     def _drain_status(self, dt=None):
@@ -354,16 +419,20 @@ class WorkManagerTestApp(App):
                 break
         if latest is None:
             return
-        for key in ("one_time", "periodic", "chain"):
+        for key in ("one_time", "periodic", "chain", "tag"):
             value = latest.get(key)
             if isinstance(value, Exception):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
-        self.status.text = "Status: {}: {}\nPeriodic: {}\nChain: {}".format(
-            latest.get("name", self.current_name),
-            self._format_info(latest.get("one_time")),
-            self._format_info(latest.get("periodic")),
-            self._format_info(latest.get("chain")),
+        self.status.text = (
+            "Status: {}: {}\nPeriodic: {}\nChain: {}\nTag {}: {}".format(
+                latest.get("name", self.current_name),
+                self._format_info(latest.get("one_time")),
+                self._format_info(latest.get("periodic")),
+                self._format_info(latest.get("chain")),
+                latest.get("tag_name", self.current_tag),
+                self._format_infos(latest.get("tag")),
+            )
         )
 
     def on_stop(self):

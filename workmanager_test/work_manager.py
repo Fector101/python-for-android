@@ -95,6 +95,23 @@ def _validate_worker_name(worker_name: str) -> str:
     return worker_name
 
 
+def _validate_tags(tags: Any) -> tuple:
+    if tags is None:
+        return ()
+    if isinstance(tags, str) or not isinstance(tags, (list, tuple)):
+        raise ValueError("tags must be a list or tuple of strings")
+    if len(tags) > 10:
+        raise ValueError("a work request supports at most 10 tags")
+    cleaned = []
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.strip():
+            raise ValueError("each tag must be a non-empty string")
+        if len(tag) > 100:
+            raise ValueError("each tag must be at most 100 characters")
+        cleaned.append(tag)
+    return tuple(cleaned)
+
+
 def _validate_name(name: str) -> str:
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
@@ -144,6 +161,9 @@ class Work:
             for retries requested by the worker via ``work_result.request_retry``.
         backoff_delay_seconds: Initial retry delay, clamped by WorkManager to
             10 seconds .. 24 hours (1 .. 86400 accepted here).
+        tags: Custom strings attached to the work request; query them with
+            ``get_work_infos_by_tag()``. WorkManager adds its own worker-class
+            tag in addition to these.
         worker_name: Name passed to p4a's ``--worker`` build argument. The
             default matches ``--worker=script:...``.
     """
@@ -158,6 +178,7 @@ class Work:
     policy: str = "keep"
     backoff_policy: str = "exponential"
     backoff_delay_seconds: int = 30
+    tags: tuple = field(default_factory=tuple)
     worker_name: str = "script"
 
     def __post_init__(self) -> None:
@@ -191,6 +212,7 @@ class Work:
             raise ValueError(
                 "backoff_delay_seconds must be between 1 and 86400"
             )
+        self.tags = _validate_tags(self.tags)
 
     @property
     def is_periodic(self) -> bool:
@@ -215,6 +237,10 @@ class Work:
             )
         return payload
 
+    def tags_json(self) -> str:
+        """Serialise custom tags for the generated Java worker."""
+        return json.dumps(list(self.tags), separators=(",", ":"))
+
     def schedule(self) -> "Work":
         worker = _worker_class(self.worker_name)
         worker.schedule(
@@ -230,6 +256,7 @@ class Work:
             self.policy,
             self.backoff_policy,
             self.backoff_delay_seconds,
+            self.tags_json(),
         )
         return self
 
@@ -310,6 +337,7 @@ class WorkChain:
                 "charging_required": bool(step.charging_required),
                 "backoff_policy": step.backoff_policy,
                 "backoff_delay_seconds": step.backoff_delay_seconds,
+                "tags": list(step.tags),
             }
             for step in self.steps
         ], separators=(",", ":"))
@@ -345,6 +373,11 @@ def cancel(name: str, worker_name: str = "script") -> None:
 def cancel_all(worker_name: str = "script") -> None:
     """Cancel all WorkManager work for this app."""
     _worker_class(_validate_worker_name(worker_name)).cancelAll(_context())
+
+
+def cancel_by_tag(tag: str, worker_name: str = "script") -> None:
+    """Cancel every work request carrying ``tag``."""
+    _worker_class(_validate_worker_name(worker_name)).cancelByTag(_context(), tag)
 
 
 def get_info(name: str, worker_name: str = "script") -> str:
@@ -424,6 +457,14 @@ def get_work_infos(name: str, worker_name: str = "script") -> WorkInfos:
     """Return every WorkManager work-info row for ``name``."""
     raw = _worker_class(_validate_worker_name(worker_name)).getInfoJson(
         _context(), name
+    )
+    return _parse_info_json(raw)
+
+
+def get_work_infos_by_tag(tag: str, worker_name: str = "script") -> WorkInfos:
+    """Return every WorkManager work-info row carrying ``tag``."""
+    raw = _worker_class(_validate_worker_name(worker_name)).getInfoJsonByTag(
+        _context(), tag
     )
     return _parse_info_json(raw)
 

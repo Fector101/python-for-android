@@ -101,6 +101,16 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                 Math.max(10L, Math.min(86400L, seconds)));
     }
 
+    private static void addTags(WorkRequest.Builder builder, JSONArray tags)
+            throws JSONException {
+        if (tags == null) {
+            return;
+        }
+        for (int i = 0; i < tags.length(); i++) {
+            builder.addTag(tags.getString(i));
+        }
+    }
+
     /** Schedule work from Python without needing Java class literals in jnius. */
     public static void schedule(
             Context context,
@@ -115,7 +125,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String policy) {
         schedule(context, uniqueName, script, serviceArgument, periodic,
                 delaySeconds, intervalMinutes, networkRequired, chargingRequired,
-                policy, "exponential", 30);
+                policy, "exponential", 30, "[]");
     }
 
     /** Schedule work with explicit retry backoff criteria. */
@@ -132,6 +142,26 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             String policy,
             String backoffPolicy,
             long backoffDelaySeconds) {
+        schedule(context, uniqueName, script, serviceArgument, periodic,
+                delaySeconds, intervalMinutes, networkRequired, chargingRequired,
+                policy, backoffPolicy, backoffDelaySeconds, "[]");
+    }
+
+    /** Schedule work with custom tags as a JSON array of strings. */
+    public static void schedule(
+            Context context,
+            String uniqueName,
+            String script,
+            String serviceArgument,
+            boolean periodic,
+            long delaySeconds,
+            long intervalMinutes,
+            boolean networkRequired,
+            boolean chargingRequired,
+            String policy,
+            String backoffPolicy,
+            long backoffDelaySeconds,
+            String tagsJson) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(networkRequired, chargingRequired);
         BackoffPolicy backoff = parseBackoff(backoffPolicy);
@@ -139,31 +169,40 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         WorkManager manager = WorkManager.getInstance(context);
         boolean replace = "replace".equalsIgnoreCase(policy);
 
-        if (periodic) {
-            long minutes = Math.max(15L, intervalMinutes);
-            PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
-                    {{ name|capitalize }}Worker.class, minutes, TimeUnit.MINUTES)
-                    .setInputData(data)
-                    .setConstraints(constraints)
-                    .setBackoffCriteria(backoff, backoffMillis, TimeUnit.MILLISECONDS)
-                    .build();
-            ExistingPeriodicWorkPolicy periodicPolicy = replace
-                    ? ExistingPeriodicWorkPolicy.REPLACE
-                    : ExistingPeriodicWorkPolicy.KEEP;
-            manager.enqueueUniquePeriodicWork(uniqueName, periodicPolicy, request);
-        } else {
-            OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
-                    {{ name|capitalize }}Worker.class)
-                    .setInputData(data)
-                    .setConstraints(constraints)
-                    .setBackoffCriteria(backoff, backoffMillis, TimeUnit.MILLISECONDS);
-            if (delaySeconds > 0) {
-                builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
+        try {
+            JSONArray tags = new JSONArray(tagsJson);
+            if (periodic) {
+                long minutes = Math.max(15L, intervalMinutes);
+                PeriodicWorkRequest.Builder builder = new PeriodicWorkRequest.Builder(
+                        {{ name|capitalize }}Worker.class, minutes, TimeUnit.MINUTES)
+                        .setInputData(data)
+                        .setConstraints(constraints)
+                        .setBackoffCriteria(
+                                backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                addTags(builder, tags);
+                ExistingPeriodicWorkPolicy periodicPolicy = replace
+                        ? ExistingPeriodicWorkPolicy.REPLACE
+                        : ExistingPeriodicWorkPolicy.KEEP;
+                manager.enqueueUniquePeriodicWork(
+                        uniqueName, periodicPolicy, builder.build());
+            } else {
+                OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
+                        {{ name|capitalize }}Worker.class)
+                        .setInputData(data)
+                        .setConstraints(constraints)
+                        .setBackoffCriteria(
+                                backoff, backoffMillis, TimeUnit.MILLISECONDS);
+                addTags(builder, tags);
+                if (delaySeconds > 0) {
+                    builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
+                }
+                ExistingWorkPolicy workPolicy = replace
+                        ? ExistingWorkPolicy.REPLACE
+                        : ExistingWorkPolicy.KEEP;
+                manager.enqueueUniqueWork(uniqueName, workPolicy, builder.build());
             }
-            ExistingWorkPolicy workPolicy = replace
-                    ? ExistingWorkPolicy.REPLACE
-                    : ExistingWorkPolicy.KEEP;
-            manager.enqueueUniqueWork(uniqueName, workPolicy, builder.build());
+        } catch (JSONException e) {
+            Log.e(TAG, "Invalid work tags", e);
         }
     }
 
@@ -204,6 +243,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                                 parseBackoff(step.optString("backoff_policy", "")),
                                 backoffMillis(step.optLong("backoff_delay_seconds", 30)),
                                 TimeUnit.MILLISECONDS);
+                addTags(builder, step.optJSONArray("tags"));
                 long delay = step.optLong("delay_seconds", 0);
                 if (delay > 0) {
                     builder.setInitialDelay(delay, TimeUnit.SECONDS);
@@ -230,6 +270,10 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
 
     public static void cancelAll(Context context) {
         WorkManager.getInstance(context).cancelAllWork();
+    }
+
+    public static void cancelByTag(Context context, String tag) {
+        WorkManager.getInstance(context).cancelAllWorkByTag(tag);
     }
 
     public static String getStatus(Context context, String uniqueName) {
@@ -318,44 +362,64 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         }
     }
 
+    private static String infosToJson(List<WorkInfo> infos) throws JSONException {
+        JSONObject root = new JSONObject();
+        JSONArray rows = new JSONArray();
+        root.put("found", infos != null && !infos.isEmpty());
+        if (infos != null) {
+            for (WorkInfo info : infos) {
+                JSONObject row = new JSONObject();
+                row.put("id", info.getId().toString());
+                row.put("state", info.getState().toString());
+                row.put("runAttemptCount", info.getRunAttemptCount());
+                row.put("generation", info.getGeneration());
+                row.put("initialDelayMillis", info.getInitialDelayMillis());
+                row.put("nextScheduleTimeMillis",
+                        info.getNextScheduleTimeMillis());
+                int stopReason = info.getStopReason();
+                row.put("stopReason", stopReason);
+                row.put("stopReasonName", stopReasonName(stopReason));
+                JSONArray tags = new JSONArray();
+                for (String tag : info.getTags()) {
+                    tags.put(tag);
+                }
+                row.put("tags", tags);
+                row.put("output", dataToJson(info.getOutputData()));
+                row.put("progress", dataToJson(info.getProgress()));
+                rows.put(row);
+            }
+        }
+        root.put("infos", rows);
+        return root.toString();
+    }
+
+    private static String infoError(Exception e) {
+        Log.e(TAG, "Failed to read work info", e);
+        return "{\"found\":false,\"error\":"
+                + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+    }
+
     /** Rich read-only work details as JSON, for the Python Work API. */
     public static String getInfoJson(Context context, String uniqueName) {
         try {
             List<WorkInfo> infos = WorkManager.getInstance(context)
                     .getWorkInfosForUniqueWork(uniqueName)
                     .get(5, TimeUnit.SECONDS);
-            JSONObject root = new JSONObject();
-            JSONArray rows = new JSONArray();
-            root.put("found", infos != null && !infos.isEmpty());
-            if (infos != null) {
-                for (WorkInfo info : infos) {
-                    JSONObject row = new JSONObject();
-                    row.put("id", info.getId().toString());
-                    row.put("state", info.getState().toString());
-                    row.put("runAttemptCount", info.getRunAttemptCount());
-                    row.put("generation", info.getGeneration());
-                    row.put("initialDelayMillis", info.getInitialDelayMillis());
-                    row.put("nextScheduleTimeMillis",
-                            info.getNextScheduleTimeMillis());
-                    int stopReason = info.getStopReason();
-                    row.put("stopReason", stopReason);
-                    row.put("stopReasonName", stopReasonName(stopReason));
-                    JSONArray tags = new JSONArray();
-                    for (String tag : info.getTags()) {
-                        tags.put(tag);
-                    }
-                    row.put("tags", tags);
-                    row.put("output", dataToJson(info.getOutputData()));
-                    row.put("progress", dataToJson(info.getProgress()));
-                    rows.put(row);
-                }
-            }
-            root.put("infos", rows);
-            return root.toString();
+            return infosToJson(infos);
         } catch (Exception e) {
-            Log.e(TAG, "Failed to read work info", e);
-            return "{\"found\":false,\"error\":"
-                    + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+            return infoError(e);
+        }
+    }
+
+    /** All work-info rows carrying a custom (or auto-generated) tag. */
+    public static String getInfoJsonByTag(Context context, String tag) {
+        try {
+            List<WorkInfo> infos = WorkManager.getInstance(context)
+                    .getWorkInfosByTag(tag)
+                    .get(5, TimeUnit.SECONDS);
+            return infosToJson(infos);
+        } catch (Exception e) {
+            return infoError(e);
         }
     }
 }

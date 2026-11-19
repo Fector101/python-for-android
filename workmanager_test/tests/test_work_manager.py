@@ -36,6 +36,10 @@ def java(monkeypatch):
             calls["cancelAll"] = args
 
         @staticmethod
+        def cancelByTag(*args):
+            calls["cancelByTag"] = args
+
+        @staticmethod
         def getStatus(*args):
             calls["getStatus"] = args
             return "SUCCEEDED"
@@ -44,6 +48,11 @@ def java(monkeypatch):
         def getInfoJson(*args):
             calls["getInfoJson"] = args
             return calls.get("info_json", '{"found":false,"infos":[]}')
+
+        @staticmethod
+        def getInfoJsonByTag(*args):
+            calls["getInfoJsonByTag"] = args
+            return calls.get("tag_info_json", '{"found":false,"infos":[]}')
 
     def fake_autoclass(name):
         calls.setdefault("autoclass", []).append(name)
@@ -66,7 +75,8 @@ def test_one_time_schedule_arguments(java):
 
     assert work.schedule() is work
     (context, name, script, data, periodic, delay, interval,
-     network, charging, policy, backoff_policy, backoff_delay) = calls["schedule"]
+     network, charging, policy, backoff_policy, backoff_delay,
+     tags_json) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -79,6 +89,7 @@ def test_one_time_schedule_arguments(java):
     assert policy == "replace"
     assert backoff_policy == "exponential"
     assert backoff_delay == 30
+    assert tags_json == "[]"
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -157,7 +168,8 @@ def test_one_time_schedule_passes_constraints(java):
     ).schedule()
 
     (context, name, script, data, periodic, delay, interval,
-     network, charging, policy, backoff_policy, backoff_delay) = calls["schedule"]
+     network, charging, policy, backoff_policy, backoff_delay,
+     tags_json) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
@@ -499,6 +511,7 @@ def test_chain_steps_json_carries_per_step_options(java):
         "charging_required": False,
         "backoff_policy": "linear",
         "backoff_delay_seconds": 12,
+        "tags": [],
     }
     assert steps[1]["script"] == "workers/result.py"
     assert steps[1]["charging_required"] is True
@@ -572,6 +585,74 @@ def test_chain_cancel_and_status_use_chain_name(java):
     assert calls["cancel"][1] == "chain_cancel"
     assert chain.get_info() == "SUCCEEDED"
     assert calls["getStatus"][1] == "chain_cancel"
+
+
+def test_custom_tags_reach_java(java):
+    _, calls = java
+    work_manager.Work(
+        name="tagged",
+        script="workers/heartbeat.py",
+        tags=["demo", "release"],
+    ).schedule()
+
+    assert json.loads(calls["schedule"][12]) == ["demo", "release"]
+
+
+@pytest.mark.parametrize("tags", [
+    "demo",
+    42,
+    ["a", ""],
+    ["a", 2],
+    ["x" * 101],
+    ["t"] * 11,
+])
+def test_invalid_tags(tags):
+    with pytest.raises(ValueError, match="tag"):
+        work_manager.Work(name="tagged", script="workers/heartbeat.py", tags=tags)
+
+
+def test_get_work_infos_by_tag(java):
+    _, calls = java
+    calls["tag_info_json"] = json.dumps({
+        "found": True,
+        "infos": [{
+            "id": "abc",
+            "state": "SUCCEEDED",
+            "tags": ["demo", "ScriptWorker"],
+        }],
+    })
+
+    infos = work_manager.get_work_infos_by_tag("demo")
+
+    assert calls["getInfoJsonByTag"] == (calls["getInfoJsonByTag"][0], "demo")
+    assert infos.found is True
+    assert len(infos.infos) == 1
+    assert infos.infos[0].tags == ("demo", "ScriptWorker")
+
+
+def test_cancel_by_tag(java):
+    _, calls = java
+
+    work_manager.cancel_by_tag("demo")
+
+    assert calls["cancelByTag"] == (calls["cancelByTag"][0], "demo")
+
+
+def test_chain_step_json_includes_tags(java):
+    _, calls = java
+    work_manager.Work(
+        name="chain_tags",
+        script="workers/chain.py",
+        tags=["pipeline", "step1"],
+    ).then(work_manager.Work(
+        name="s2",
+        script="workers/chain.py",
+        tags=["pipeline"],
+    )).schedule()
+
+    steps = json.loads(calls["scheduleChain"][3])
+    assert steps[0]["tags"] == ["pipeline", "step1"]
+    assert steps[1]["tags"] == ["pipeline"]
 
 
 def test_work_object_exposes_work_info(java):
