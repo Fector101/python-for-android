@@ -12,6 +12,7 @@ import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkContinuation;
 import androidx.work.WorkInfo;
 import androidx.work.WorkManager;
 import androidx.work.WorkerParameters;
@@ -87,6 +88,19 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
         return builder.build();
     }
 
+    private static BackoffPolicy parseBackoff(String policy) {
+        return "linear".equalsIgnoreCase(policy)
+                ? BackoffPolicy.LINEAR
+                : BackoffPolicy.EXPONENTIAL;
+    }
+
+    private static long backoffMillis(long seconds) {
+        // WorkRequest.MIN_BACKOFF_MILLIS is 10 s and MAX_BACKOFF_MILLIS is 24 h;
+        // clamp here so a bad value can never crash the app from jnius.
+        return TimeUnit.SECONDS.toMillis(
+                Math.max(10L, Math.min(86400L, seconds)));
+    }
+
     /** Schedule work from Python without needing Java class literals in jnius. */
     public static void schedule(
             Context context,
@@ -120,13 +134,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             long backoffDelaySeconds) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(networkRequired, chargingRequired);
-        BackoffPolicy backoff = "linear".equalsIgnoreCase(backoffPolicy)
-                ? BackoffPolicy.LINEAR
-                : BackoffPolicy.EXPONENTIAL;
-        // WorkRequest.MIN_BACKOFF_MILLIS is 10 s and MAX_BACKOFF_MILLIS is 24 h;
-        // clamp here so a bad value can never crash the app from jnius.
-        long backoffMillis = TimeUnit.SECONDS.toMillis(
-                Math.max(10L, Math.min(86400L, backoffDelaySeconds)));
+        BackoffPolicy backoff = parseBackoff(backoffPolicy);
+        long backoffMillis = backoffMillis(backoffDelaySeconds);
         WorkManager manager = WorkManager.getInstance(context);
         boolean replace = "replace".equalsIgnoreCase(policy);
 
@@ -155,6 +164,63 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                     ? ExistingWorkPolicy.REPLACE
                     : ExistingWorkPolicy.KEEP;
             manager.enqueueUniqueWork(uniqueName, workPolicy, builder.build());
+        }
+    }
+
+    /**
+     * Schedule a linear chain of one-time work under a single unique name.
+     *
+     * stepsJson is a JSON array; each step carries its own script, argument,
+     * initial delay, constraints and backoff. Strings only, so jnius needs no
+     * Java arrays or class literals.
+     */
+    public static void scheduleChain(
+            Context context,
+            String uniqueName,
+            String policy,
+            String stepsJson) {
+        try {
+            JSONArray steps = new JSONArray(stepsJson);
+            if (steps.length() < 2) {
+                Log.e(TAG, "A work chain needs at least two steps");
+                return;
+            }
+            WorkManager manager = WorkManager.getInstance(context);
+            ExistingWorkPolicy workPolicy = "replace".equalsIgnoreCase(policy)
+                    ? ExistingWorkPolicy.REPLACE
+                    : ExistingWorkPolicy.KEEP;
+            WorkContinuation continuation = null;
+            for (int i = 0; i < steps.length(); i++) {
+                JSONObject step = steps.getJSONObject(i);
+                OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
+                        {{ name|capitalize }}Worker.class)
+                        .setInputData(buildInputData(
+                                step.optString("script", ""),
+                                step.optString("argument", "")))
+                        .setConstraints(buildConstraints(
+                                step.optBoolean("network_required", false),
+                                step.optBoolean("charging_required", false)))
+                        .setBackoffCriteria(
+                                parseBackoff(step.optString("backoff_policy", "")),
+                                backoffMillis(step.optLong("backoff_delay_seconds", 30)),
+                                TimeUnit.MILLISECONDS);
+                long delay = step.optLong("delay_seconds", 0);
+                if (delay > 0) {
+                    builder.setInitialDelay(delay, TimeUnit.SECONDS);
+                }
+                OneTimeWorkRequest request = builder.build();
+                if (continuation == null) {
+                    continuation = manager.beginUniqueWork(
+                            uniqueName, workPolicy, request);
+                } else {
+                    continuation = continuation.then(request);
+                }
+            }
+            if (continuation != null) {
+                continuation.enqueue();
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "Invalid work chain steps", e);
         }
     }
 

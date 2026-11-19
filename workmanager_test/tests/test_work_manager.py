@@ -24,6 +24,10 @@ def java(monkeypatch):
             calls["schedule"] = args
 
         @staticmethod
+        def scheduleChain(*args):
+            calls["scheduleChain"] = args
+
+        @staticmethod
         def cancel(*args):
             calls["cancel"] = args
 
@@ -435,6 +439,139 @@ def test_work_result_attempt_increments_across_calls(tmp_path, monkeypatch):
     assert [attempt(), attempt(), attempt()] == [1, 2, 3]
     base = tmp_path / "work_data" / "workers_retry.py"
     assert (base / "attempt.txt").read_text() == "3"
+
+
+def test_fluent_chain_schedules_java_chain(java):
+    _, calls = java
+    first = work_manager.Work(
+        name="chain_once",
+        script="workers/chain.py",
+        args={"step": 1},
+        policy="replace",
+    )
+    chain = first.then(work_manager.Work(
+        name="chain_step_2",
+        script="workers/chain.py",
+        args={"step": 2},
+    ))
+
+    assert isinstance(chain, work_manager.WorkChain)
+    assert chain.name == "chain_once"
+    assert chain.policy == "replace"
+    assert chain.worker_name == "script"
+    assert len(chain.steps) == 2
+
+    assert chain.schedule() is chain
+    context, name, policy, steps_json = calls["scheduleChain"]
+    assert isinstance(context, FakeContext)
+    assert name == "chain_once"
+    assert policy == "replace"
+    steps = json.loads(steps_json)
+    assert [step["script"] for step in steps] == [
+        "workers/chain.py", "workers/chain.py"]
+    assert [json.loads(step["argument"])["step"] for step in steps] == [1, 2]
+    assert calls["autoclass"] == [
+        "io.github.fector101.workmanagertest.ScriptWorker",
+    ]
+
+
+def test_chain_steps_json_carries_per_step_options(java):
+    _, calls = java
+    work_manager.Work(
+        name="chain_opts",
+        script="workers/chain.py",
+        delay_seconds=3,
+        network_required=True,
+        backoff_policy="linear",
+        backoff_delay_seconds=12,
+    ).then(work_manager.Work(
+        name="step2",
+        script="workers/result.py",
+        charging_required=True,
+    )).schedule()
+
+    steps = json.loads(calls["scheduleChain"][3])
+    assert steps[0] == {
+        "script": "workers/chain.py",
+        "argument": "{}",
+        "delay_seconds": 3,
+        "network_required": True,
+        "charging_required": False,
+        "backoff_policy": "linear",
+        "backoff_delay_seconds": 12,
+    }
+    assert steps[1]["script"] == "workers/result.py"
+    assert steps[1]["charging_required"] is True
+    assert steps[1]["network_required"] is False
+
+
+def test_chain_then_appends_third_step(java):
+    _, calls = java
+    chain = work_manager.Work(
+        name="chain3", script="workers/chain.py",
+    ).then(work_manager.Work(name="s2", script="workers/chain.py"))
+
+    assert chain.then(work_manager.Work(
+        name="s3", script="workers/chain.py")) is chain
+    chain.schedule()
+    assert len(json.loads(calls["scheduleChain"][3])) == 3
+
+
+@pytest.mark.parametrize("steps", [
+    [],
+    [work_manager.Work(name="s1", script="workers/chain.py")],
+])
+def test_chain_requires_at_least_two_steps(steps):
+    with pytest.raises(ValueError, match="at least two"):
+        work_manager.WorkChain(name="chain_bad", steps=steps)
+
+
+def test_chain_rejects_more_than_ten_steps():
+    steps = [
+        work_manager.Work(name="s{}".format(i), script="workers/chain.py")
+        for i in range(11)
+    ]
+    with pytest.raises(ValueError, match="at most 10"):
+        work_manager.WorkChain(name="chain_big", steps=steps)
+
+
+def test_chain_rejects_periodic_step():
+    with pytest.raises(ValueError, match="periodic"):
+        work_manager.Work(
+            name="chain_bad", script="workers/chain.py",
+        ).then(work_manager.Work(
+            name="s2", script="workers/chain.py", interval_minutes=15))
+
+
+def test_chain_rejects_mismatched_worker_name():
+    with pytest.raises(ValueError, match="worker_name"):
+        work_manager.Work(
+            name="chain_bad", script="workers/chain.py",
+        ).then(work_manager.Work(
+            name="s2", script="workers/chain.py", worker_name="other"))
+
+
+def test_chain_validates_name_and_policy():
+    steps = [
+        work_manager.Work(name="s1", script="workers/chain.py"),
+        work_manager.Work(name="s2", script="workers/chain.py"),
+    ]
+    with pytest.raises(ValueError, match="name"):
+        work_manager.WorkChain(name="bad name!", steps=steps)
+    with pytest.raises(ValueError, match="policy"):
+        work_manager.WorkChain(name="chain_bad", steps=steps, policy="bad")
+
+
+def test_chain_cancel_and_status_use_chain_name(java):
+    _, calls = java
+    chain = work_manager.Work(
+        name="chain_cancel", script="workers/chain.py",
+    ).then(work_manager.Work(name="s2", script="workers/chain.py"))
+
+    chain.cancel()
+    assert calls["cancel"][1] == "chain_cancel"
+    assert chain.get_info() == "SUCCEEDED"
+    assert calls["getStatus"][1] == "chain_cancel"
 
 
 def test_work_object_exposes_work_info(java):

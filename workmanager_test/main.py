@@ -68,6 +68,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
+        root.add_widget(self._button("Schedule chain (2 steps, 8s each)", self.schedule_chain))
         root.add_widget(self._button("Cancel work", self.cancel_work))
         root.add_widget(self._button("Cancel all", self.cancel_all_work))
         root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
@@ -75,7 +76,7 @@ class WorkManagerTestApp(App):
         self.status = Label(
             text="Status: (not queried)",
             size_hint_y=None,
-            height=110,
+            height=140,
             halign="left",
             valign="top",
         )
@@ -263,6 +264,27 @@ class WorkManagerTestApp(App):
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
 
+    def schedule_chain(self, _=None, touch=None):
+        try:
+            Work(
+                name="chain_once",
+                script="workers/chain.py",
+                args={"step": 1, "message": "chain step 1", "sleep_seconds": 8},
+                delay_seconds=2,
+                policy=self.policy,
+                **self.constraints,
+            ).then(Work(
+                name="chain_step_2",
+                script="workers/chain.py",
+                args={"step": 2, "message": "chain step 2", "sleep_seconds": 8},
+                policy=self.policy,
+                **self.constraints,
+            )).schedule()
+            self._note("Scheduled chain: chain_once (2 steps)")
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
     def cancel_work(self, _=None, touch=None):
         try:
             cancel(self.current_name)
@@ -313,7 +335,8 @@ class WorkManagerTestApp(App):
             name = self._poll_name
             result = {"name": name}
             for key, work_name in (("one_time", name),
-                                   ("periodic", "heartbeat_periodic")):
+                                   ("periodic", "heartbeat_periodic"),
+                                   ("chain", "chain_once")):
                 try:
                     result[key] = get_work_info(work_name)
                 except Exception as exc:
@@ -331,15 +354,16 @@ class WorkManagerTestApp(App):
                 break
         if latest is None:
             return
-        for key in ("one_time", "periodic"):
+        for key in ("one_time", "periodic", "chain"):
             value = latest.get(key)
             if isinstance(value, Exception):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
-        self.status.text = "Status: {}: {}\nPeriodic: {}".format(
+        self.status.text = "Status: {}: {}\nPeriodic: {}\nChain: {}".format(
             latest.get("name", self.current_name),
             self._format_info(latest.get("one_time")),
             self._format_info(latest.get("periodic")),
+            self._format_info(latest.get("chain")),
         )
 
     def on_stop(self):

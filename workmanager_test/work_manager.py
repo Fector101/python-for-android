@@ -15,7 +15,7 @@ import json
 import posixpath
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 _MAX_SCRIPT_LENGTH = 120  # start.c ENTRYPOINT_MAXLEN is 128.
@@ -95,6 +95,17 @@ def _validate_worker_name(worker_name: str) -> str:
     return worker_name
 
 
+def _validate_name(name: str) -> str:
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty string")
+    if not _SAFE_NAME_RE.match(name):
+        raise ValueError(
+            "name may only contain letters, digits, '.', '_' and '-', "
+            "and must start with a letter"
+        )
+    return name
+
+
 def _validate_script(script: str) -> str:
     if not isinstance(script, str) or not script:
         raise ValueError("script must be a non-empty relative path")
@@ -150,13 +161,7 @@ class Work:
     worker_name: str = "script"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("name must be a non-empty string")
-        if not _SAFE_NAME_RE.match(self.name):
-            raise ValueError(
-                "name may only contain letters, digits, '.', '_' and '-', "
-                "and must start with a letter"
-            )
+        _validate_name(self.name)
         self.script = _validate_script(self.script)
         self.worker_name = _validate_worker_name(self.worker_name)
         self.delay_seconds = int(self.delay_seconds)
@@ -226,6 +231,92 @@ class Work:
             self.backoff_policy,
             self.backoff_delay_seconds,
         )
+        return self
+
+    def then(self, work: "Work") -> "WorkChain":
+        """Append a step and return a chain owned by this work's name.
+
+        The first step's ``name``, ``policy`` and ``worker_name`` become the
+        chain's; later step names are just labels.
+        """
+        return WorkChain(
+            name=self.name,
+            steps=[self, work],
+            policy=self.policy,
+            worker_name=self.worker_name,
+        )
+
+    def cancel(self) -> None:
+        cancel(self.name, worker_name=self.worker_name)
+
+    def get_info(self) -> str:
+        return get_info(self.name, worker_name=self.worker_name)
+
+    def get_work_info(self) -> Optional[WorkInfo]:
+        return get_work_info(self.name, worker_name=self.worker_name)
+
+    def get_work_infos(self) -> WorkInfos:
+        return get_work_infos(self.name, worker_name=self.worker_name)
+
+
+@dataclass
+class WorkChain:
+    """A linear chain of one-time work scheduled under one unique name.
+
+    Build one with ``Work(...).then(Work(...))``. Steps run in order, each one
+    starting only after the previous one succeeds; a failed or retried step
+    blocks the rest of the chain.
+    """
+
+    name: str
+    steps: List[Work]
+    policy: str = "keep"
+    worker_name: str = "script"
+
+    def __post_init__(self) -> None:
+        _validate_name(self.name)
+        self.policy = self.policy.lower()
+        if self.policy not in ("keep", "replace"):
+            raise ValueError("policy must be 'keep' or 'replace'")
+        self.worker_name = _validate_worker_name(self.worker_name)
+        if len(self.steps) < 2:
+            raise ValueError("a work chain needs at least two steps")
+        if len(self.steps) > 10:
+            raise ValueError("a work chain supports at most 10 steps")
+        for step in self.steps:
+            self._validate_step(step)
+
+    def _validate_step(self, step: Work) -> None:
+        if not isinstance(step, Work):
+            raise ValueError("chain steps must be Work instances")
+        if step.is_periodic:
+            raise ValueError("periodic work cannot be part of a chain")
+        if step.worker_name != self.worker_name:
+            raise ValueError("all chain steps must use the same worker_name")
+
+    def then(self, work: Work) -> "WorkChain":
+        self._validate_step(work)
+        self.steps.append(work)
+        return self
+
+    def steps_json(self) -> str:
+        """Serialise per-step settings for Java's scheduleChain()."""
+        return json.dumps([
+            {
+                "script": step.script,
+                "argument": step.argument_json(),
+                "delay_seconds": step.delay_seconds,
+                "network_required": bool(step.network_required),
+                "charging_required": bool(step.charging_required),
+                "backoff_policy": step.backoff_policy,
+                "backoff_delay_seconds": step.backoff_delay_seconds,
+            }
+            for step in self.steps
+        ], separators=(",", ":"))
+
+    def schedule(self) -> "WorkChain":
+        worker = _worker_class(self.worker_name)
+        worker.scheduleChain(_context(), self.name, self.policy, self.steps_json())
         return self
 
     def cancel(self) -> None:
