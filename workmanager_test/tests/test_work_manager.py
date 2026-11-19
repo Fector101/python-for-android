@@ -61,8 +61,8 @@ def test_one_time_schedule_arguments(java):
     )
 
     assert work.schedule() is work
-    context, name, script, data, periodic, delay, interval, network, charging, policy = \
-        calls["schedule"]
+    (context, name, script, data, periodic, delay, interval,
+     network, charging, policy, backoff_policy, backoff_delay) = calls["schedule"]
     assert isinstance(context, FakeContext)
     assert name == "heartbeat_once"
     assert script == "workers/heartbeat.py"
@@ -73,6 +73,8 @@ def test_one_time_schedule_arguments(java):
     assert network is False
     assert charging is False
     assert policy == "replace"
+    assert backoff_policy == "exponential"
+    assert backoff_delay == 30
     assert calls["autoclass"] == [
         "io.github.fector101.workmanagertest.ScriptWorker",
     ]
@@ -87,6 +89,39 @@ def test_explicit_keep_policy_reaches_java(java):
     ).schedule()
 
     assert calls["schedule"][9] == "keep"
+
+
+def test_explicit_backoff_reaches_java(java):
+    _, calls = java
+    work_manager.Work(
+        name="backoff_once",
+        script="workers/retry.py",
+        backoff_policy="LINEAR",
+        backoff_delay_seconds=10,
+    ).schedule()
+
+    assert calls["schedule"][10] == "linear"
+    assert calls["schedule"][11] == 10
+
+
+@pytest.mark.parametrize("policy", ["fast", "LINEAR!", ""])
+def test_invalid_backoff_policy(policy):
+    with pytest.raises(ValueError, match="backoff_policy"):
+        work_manager.Work(
+            name="bad_backoff",
+            script="workers/retry.py",
+            backoff_policy=policy,
+        )
+
+
+@pytest.mark.parametrize("delay", [0, -1, 86401, "abc"])
+def test_invalid_backoff_delay(delay):
+    with pytest.raises(ValueError, match="backoff_delay_seconds"):
+        work_manager.Work(
+            name="bad_backoff",
+            script="workers/retry.py",
+            backoff_delay_seconds=delay,
+        )
 
 
 def test_periodic_schedule_arguments(java):
@@ -118,7 +153,7 @@ def test_one_time_schedule_passes_constraints(java):
     ).schedule()
 
     (context, name, script, data, periodic, delay, interval,
-     network, charging, policy) = calls["schedule"]
+     network, charging, policy, backoff_policy, backoff_delay) = calls["schedule"]
     assert name == "constrained_once"
     assert periodic is False
     assert delay == 10
@@ -376,6 +411,30 @@ def test_work_result_writes_output_and_progress(tmp_path, monkeypatch):
         "step": 1, "total": 2}
     assert json.loads((base / "output.json").read_text()) == {
         "message": "done"}
+
+
+def test_work_result_writes_retry_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/retry.py")
+    from work_result import request_retry
+
+    request_retry("transient failure")
+
+    base = tmp_path / "work_data" / "workers_retry.py"
+    assert json.loads((base / "retry.json").read_text()) == {
+        "reason": "transient failure"}
+    # attempt.txt is Java's signal to preserve the retry counter.
+    assert not (base / "attempt.txt").exists()
+
+
+def test_work_result_attempt_increments_across_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/retry.py")
+    from work_result import attempt
+
+    assert [attempt(), attempt(), attempt()] == [1, 2, 3]
+    base = tmp_path / "work_data" / "workers_retry.py"
+    assert (base / "attempt.txt").read_text() == "3"
 
 
 def test_work_object_exposes_work_info(java):

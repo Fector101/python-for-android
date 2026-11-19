@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
@@ -98,8 +99,34 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             boolean networkRequired,
             boolean chargingRequired,
             String policy) {
+        schedule(context, uniqueName, script, serviceArgument, periodic,
+                delaySeconds, intervalMinutes, networkRequired, chargingRequired,
+                policy, "exponential", 30);
+    }
+
+    /** Schedule work with explicit retry backoff criteria. */
+    public static void schedule(
+            Context context,
+            String uniqueName,
+            String script,
+            String serviceArgument,
+            boolean periodic,
+            long delaySeconds,
+            long intervalMinutes,
+            boolean networkRequired,
+            boolean chargingRequired,
+            String policy,
+            String backoffPolicy,
+            long backoffDelaySeconds) {
         Data data = buildInputData(script, serviceArgument);
         Constraints constraints = buildConstraints(networkRequired, chargingRequired);
+        BackoffPolicy backoff = "linear".equalsIgnoreCase(backoffPolicy)
+                ? BackoffPolicy.LINEAR
+                : BackoffPolicy.EXPONENTIAL;
+        // WorkRequest.MIN_BACKOFF_MILLIS is 10 s and MAX_BACKOFF_MILLIS is 24 h;
+        // clamp here so a bad value can never crash the app from jnius.
+        long backoffMillis = TimeUnit.SECONDS.toMillis(
+                Math.max(10L, Math.min(86400L, backoffDelaySeconds)));
         WorkManager manager = WorkManager.getInstance(context);
         boolean replace = "replace".equalsIgnoreCase(policy);
 
@@ -109,6 +136,7 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
                     {{ name|capitalize }}Worker.class, minutes, TimeUnit.MINUTES)
                     .setInputData(data)
                     .setConstraints(constraints)
+                    .setBackoffCriteria(backoff, backoffMillis, TimeUnit.MILLISECONDS)
                     .build();
             ExistingPeriodicWorkPolicy periodicPolicy = replace
                     ? ExistingPeriodicWorkPolicy.REPLACE
@@ -118,7 +146,8 @@ public class {{ name|capitalize }}Worker extends PythonWorker {
             OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(
                     {{ name|capitalize }}Worker.class)
                     .setInputData(data)
-                    .setConstraints(constraints);
+                    .setConstraints(constraints)
+                    .setBackoffCriteria(backoff, backoffMillis, TimeUnit.MILLISECONDS);
             if (delaySeconds > 0) {
                 builder.setInitialDelay(delaySeconds, TimeUnit.SECONDS);
             }

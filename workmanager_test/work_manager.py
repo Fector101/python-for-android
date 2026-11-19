@@ -129,6 +129,10 @@ class Work:
         network_required: Require a connected network.
         charging_required: Require the device to be charging.
         policy: ``"keep"`` or ``"replace"`` for an existing unique work name.
+        backoff_policy: ``"exponential"`` (WorkManager default) or ``"linear"``
+            for retries requested by the worker via ``work_result.request_retry``.
+        backoff_delay_seconds: Initial retry delay, clamped by WorkManager to
+            10 seconds .. 24 hours (1 .. 86400 accepted here).
         worker_name: Name passed to p4a's ``--worker`` build argument. The
             default matches ``--worker=script:...``.
     """
@@ -141,6 +145,8 @@ class Work:
     network_required: bool = False
     charging_required: bool = False
     policy: str = "keep"
+    backoff_policy: str = "exponential"
+    backoff_delay_seconds: int = 30
     worker_name: str = "script"
 
     def __post_init__(self) -> None:
@@ -165,6 +171,21 @@ class Work:
         self.policy = self.policy.lower()
         if self.policy not in ("keep", "replace"):
             raise ValueError("policy must be 'keep' or 'replace'")
+        self.backoff_policy = self.backoff_policy.lower()
+        if self.backoff_policy not in ("exponential", "linear"):
+            raise ValueError(
+                "backoff_policy must be 'exponential' or 'linear'"
+            )
+        try:
+            self.backoff_delay_seconds = int(self.backoff_delay_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "backoff_delay_seconds must be between 1 and 86400"
+            ) from exc
+        if not 1 <= self.backoff_delay_seconds <= 86400:
+            raise ValueError(
+                "backoff_delay_seconds must be between 1 and 86400"
+            )
 
     @property
     def is_periodic(self) -> bool:
@@ -202,6 +223,8 @@ class Work:
             bool(self.network_required),
             bool(self.charging_required),
             self.policy,
+            self.backoff_policy,
+            self.backoff_delay_seconds,
         )
         return self
 

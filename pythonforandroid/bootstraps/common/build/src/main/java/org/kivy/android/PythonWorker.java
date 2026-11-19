@@ -158,10 +158,14 @@ public abstract class PythonWorker extends RemoteListenableWorker {
             final File workDir = getWorkDir(script);
             final File outputFile = new File(workDir, "output.json");
             final File progressFile = new File(workDir, "progress.json");
+            final File retryFile = new File(workDir, "retry.json");
             if (workDir.exists()) {
                 // A work request owns a single-use process: drop stale results.
+                // attempt.txt is deliberately left alone so workers can count
+                // their own retries across disposable processes.
                 deleteIfExists(outputFile);
                 deleteIfExists(progressFile);
+                deleteIfExists(retryFile);
             } else if (!workDir.mkdirs()) {
                 Log.w(TAG, "Could not create work result dir " + workDir);
             }
@@ -197,9 +201,15 @@ public abstract class PythonWorker extends RemoteListenableWorker {
                             pythonName, pythonHome, pythonPath, serviceArg);
                 }
                 Log.i(TAG, "Finished remote python work: " + result);
+                String retryJson = readText(retryFile);
                 String outputJson = result == 0 ? readText(outputFile) : null;
                 progressExecutor.shutdownNow();
-                if (result == 0) {
+                if (retryJson != null && !retryJson.isEmpty()) {
+                    // A worker can request retry even after a clean exit; the
+                    // file wins over the process exit status.
+                    Log.i(TAG, "Worker requested retry: " + retryJson);
+                    completer.set(Result.retry());
+                } else if (result == 0) {
                     completer.set(Result.success(
                             dataFromJson(KEY_WORK_OUTPUT, outputJson)));
                 } else {

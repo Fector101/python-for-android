@@ -19,6 +19,7 @@ class WorkManagerTestApp(App):
         self.work_name = "heartbeat_once"
         self.message = "hello from WorkManager"
         self.policy = "replace"
+        self.backoff_policy = "exponential"
 
         root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
@@ -51,11 +52,22 @@ class WorkManagerTestApp(App):
         policy_row.add_widget(self.policy_button)
         root.add_widget(policy_row)
 
+        backoff_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44)
+        backoff_row.add_widget(Label(text="Backoff:", size_hint_x=0.25))
+        self.backoff_button = Button(text=self.backoff_policy, size_hint_x=0.35)
+        self.backoff_button.bind(on_press=self.toggle_backoff)
+        backoff_row.add_widget(self.backoff_button)
+        backoff_row.add_widget(Label(text="delay s", size_hint_x=0.2))
+        self.backoff_input = TextInput(text="10", multiline=False, size_hint_x=0.3)
+        backoff_row.add_widget(self.backoff_input)
+        root.add_widget(backoff_row)
+
         root.add_widget(self._button("Schedule one-time (10s)", self.schedule_once))
         root.add_widget(self._button("Schedule periodic (15m)", self.schedule_periodic))
         root.add_widget(self._button("Schedule failing script (10s)", self.schedule_failing))
         root.add_widget(self._button("Schedule slow (2s delay, 30s run)", self.schedule_slow))
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
+        root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
         root.add_widget(self._button("Cancel work", self.cancel_work))
         root.add_widget(self._button("Cancel all", self.cancel_all_work))
         root.add_widget(self._button("Refresh status", lambda _: self.refresh_status()))
@@ -103,6 +115,24 @@ class WorkManagerTestApp(App):
     def toggle_policy(self, _=None, touch=None):
         self.policy = "keep" if self.policy == "replace" else "replace"
         self.policy_button.text = self.policy
+
+    def toggle_backoff(self, _=None, touch=None):
+        self.backoff_policy = (
+            "linear" if self.backoff_policy == "exponential" else "exponential"
+        )
+        self.backoff_button.text = self.backoff_policy
+
+    @property
+    def backoff(self):
+        text = self.backoff_input.text.strip() if self.backoff_input else "10"
+        try:
+            delay = int(text)
+        except ValueError:
+            delay = 10
+        return {
+            "backoff_policy": self.backoff_policy,
+            "backoff_delay_seconds": delay,
+        }
 
     @property
     def current_name(self):
@@ -211,6 +241,24 @@ class WorkManagerTestApp(App):
             ).schedule()
             self._note("Scheduled result worker: result_once ({}, policy={})".format(
                 self._constraint_text(constraints), self.policy))
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
+    def schedule_retry(self, _=None, touch=None):
+        backoff = self.backoff
+        try:
+            Work(
+                name="retry_once",
+                script="workers/retry.py",
+                args={"message": "retry demo", "max_attempts": 3},
+                delay_seconds=2,
+                policy=self.policy,
+                **self.constraints,
+                **backoff,
+            ).schedule()
+            self._note("Scheduled retry worker: retry_once ({} / {}s)".format(
+                backoff["backoff_policy"], backoff["backoff_delay_seconds"]))
         except Exception as exc:
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()

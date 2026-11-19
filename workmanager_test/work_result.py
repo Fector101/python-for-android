@@ -2,8 +2,9 @@
 
 The generated Java worker reads ``output.json`` when the script finishes and
 polls ``progress.json`` while it runs, then exposes them as WorkInfo output and
-progress. Both sides derive the same per-script directory from
-``ANDROID_PRIVATE`` (the unpacked files/app root) and ``ANDROID_ENTRYPOINT``.
+progress. A script can also write ``retry.json`` to request WorkManager retry.
+Both sides derive the same per-script directory from ``ANDROID_PRIVATE`` (the
+unpacked files/app root) and ``ANDROID_ENTRYPOINT``.
 """
 
 import json
@@ -51,3 +52,35 @@ def set_progress(data):
 def set_output(data):
     """Publish a small JSON-serialisable result as WorkInfo.output."""
     _write("output.json", data)
+
+
+def request_retry(reason=""):
+    """Ask Java to reschedule this work with WorkManager's backoff policy.
+
+    The file takes precedence over the script's exit status. It is deleted at
+    the start of every worker attempt, so it must be written on each attempt
+    that wants a retry.
+    """
+    _write("retry.json", {"reason": reason})
+
+
+def attempt():
+    """Return this worker's 1-based attempt count.
+
+    Java clears output/progress/retry at the start of each attempt but leaves
+    ``attempt.txt`` in place, so the counter survives retry reschedules.
+    """
+    directory = work_dir()
+    os.makedirs(directory, exist_ok=True)
+    target = os.path.join(directory, "attempt.txt")
+    try:
+        with open(target, encoding="utf-8") as handle:
+            count = int(handle.read().strip() or "0")
+    except (OSError, ValueError):
+        count = 0
+    count += 1
+    temporary = target + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(str(count))
+    os.replace(temporary, target)
+    return count
