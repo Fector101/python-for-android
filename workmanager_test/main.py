@@ -128,6 +128,7 @@ class WorkManagerTestApp(App):
         root.add_widget(self._button("Schedule result worker (3s)", self.schedule_result))
         root.add_widget(self._button("Schedule retry worker (3 attempts)", self.schedule_retry))
         root.add_widget(self._button("Schedule foreground (25s)", self.schedule_foreground))
+        root.add_widget(self._button("Schedule audit worker (10s)", self.schedule_audit))
         root.add_widget(self._button("Schedule expedited (no delay, 5s run)", self.schedule_expedited))
         root.add_widget(self._button("Schedule chain (2 steps, 8s each)", self.schedule_chain))
         root.add_widget(self._button("Schedule tagged work (10s)", self.schedule_tagged))
@@ -435,6 +436,24 @@ class WorkManagerTestApp(App):
             self._note("Schedule failed: {!r}".format(exc))
         self.refresh_status()
 
+    def schedule_audit(self, _=None, touch=None):
+        constraints = self.constraints
+        try:
+            Work(
+                name="audit_once",
+                script="workers/audit.py",
+                worker_name="audit",
+                args={"message": "audit worker", "sleep_seconds": 10},
+                delay_seconds=2,
+                policy="replace",
+                unique=self.is_unique,
+                **constraints,
+            ).schedule()
+            self._note("Scheduled audit worker: audit_once (class=AuditWorker)")
+        except Exception as exc:
+            self._note("Schedule failed: {!r}".format(exc))
+        self.refresh_status()
+
     def schedule_chain(self, _=None, touch=None):
         try:
             Work(
@@ -552,6 +571,7 @@ class WorkManagerTestApp(App):
                     ("one_time", name, unique),
                     ("periodic", "heartbeat_periodic", unique),
                     ("foreground", "foreground_once", unique),
+                    ("audit", "audit_once", unique),
                     ("expedited", "expedited_once", unique),
                     ("chain", "chain_once", True)):
                 try:
@@ -576,19 +596,20 @@ class WorkManagerTestApp(App):
                 break
         if latest is None:
             return
-        for key in ("one_time", "periodic", "foreground", "expedited", "chain", "tag"):
+        for key in ("one_time", "periodic", "foreground", "audit", "expedited", "chain", "tag"):
             value = latest.get(key)
             if isinstance(value, Exception):
                 self._note("Status query failed: {!r}".format(value))
                 latest[key] = None
         self.status.text = (
-            "Status: {} ({}): {}\nPeriodic: {}\nForeground: {}\nExpedited: {}\n"
+            "Status: {} ({}): {}\nPeriodic: {}\nForeground: {}\nAudit: {}\nExpedited: {}\n"
             "Chain: {}\nTag {}: {}".format(
                 latest.get("name", self.current_name),
                 latest.get("mode", "unique"),
                 self._format_info(latest.get("one_time")),
                 self._format_info(latest.get("periodic")),
                 self._format_info(latest.get("foreground")),
+                self._format_info(latest.get("audit")),
                 self._format_info(latest.get("expedited")),
                 self._format_info(latest.get("chain")),
                 latest.get("tag_name", self.current_tag),

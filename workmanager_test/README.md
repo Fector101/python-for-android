@@ -6,12 +6,17 @@ This app exercises the local python-for-android patch based on upstream PR
 
 ## Build
 
-The spec uses the patched p4a checkout and declares one generated worker:
+The spec uses the patched p4a checkout and declares two generated workers:
 
 ```ini
 p4a.source_dir = /home/fabian/Documents/widget/python-for-android
-p4a.extra_args = --skip-prebuilt --worker=script:./workers/heartbeat.py
+p4a.extra_args = --skip-prebuilt --worker=script:./workers/heartbeat.py --worker=audit:./workers/audit.py
 ```
+
+Each `--worker=NAME:PATH` spec generates its own `NAMEWorker` /
+`NAMEWorkerService` Java pair in a `:worker_NAME` process. `NAME` is the
+generated class name; `PATH` is the build-time default entrypoint, which the
+runtime `PYTHON_WORK_SCRIPT` input-data entry overrides.
 
 Build from this directory:
 
@@ -28,12 +33,13 @@ The app can schedule:
 - a one-time `workers/heartbeat.py` job 10 seconds from now;
 - a periodic heartbeat (WorkManager's 15-minute minimum);
 - a one-time `workers/failing.py` job that returns exit code 3;
+- a one-time `workers/audit.py` job on the second generated worker class (10 s);
 - cancellation and status polling by work name.
 
 Watch for these logcat markers:
 
 ```bash
-adb logcat -s python PythonWorker ScriptWorker
+adb logcat -s python PythonWorker ScriptWorker AuditWorker
 ```
 
 Expected markers:
@@ -43,10 +49,12 @@ WORKER_MARKER heartbeat pid=... time=... message='hello from WorkManager'
 Finished remote python work: 0
 WORKER_MARKER failing pid=... args={'message': 'expected failure'}
 Finished remote python work: 3
+AUDIT_MARKER worker=audit pid=... time=... script=workers/audit.pyc message='audit worker'
 ```
 
 The UI's status label should eventually show `SUCCEEDED` for the heartbeat and
-`FAILED` for the failing script.
+audit worker, and `FAILED` for the failing script. The `AuditWorker` tag in
+logcat confirms the second generated class ran the job.
 
 ## Python API
 
@@ -68,3 +76,19 @@ cancel("heartbeat_once")
 `script` is relative to the unpacked `files/app` directory and must end in
 `.py` or `.pyc`. It is passed at runtime as `PYTHON_WORK_SCRIPT`; the script
 receives its `args` as JSON in `PYTHON_SERVICE_ARGUMENT`.
+
+To run on another generated class, pass `worker_name`:
+
+```python
+Work(
+    name="audit_once",
+    script="workers/audit.py",
+    worker_name="audit",
+    args={"message": "audit worker"},
+).schedule()
+```
+
+`worker_name` defaults to `"script"` and is also accepted by `WorkChain` and by
+`cancel`, `cancel_all`, `get_info`, `get_work_infos` and
+`get_work_infos_by_tag`. It resolves to `<package>.<Name>Worker`, so it must
+match a `--worker=NAME:...` entry in `buildozer.spec`.

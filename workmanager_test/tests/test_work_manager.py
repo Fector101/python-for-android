@@ -368,6 +368,55 @@ def test_custom_worker_name(java):
     ]
 
 
+def test_two_distinct_worker_classes(java):
+    _, calls = java
+    work_manager.Work(
+        name="script_once",
+        script="workers/heartbeat.py",
+    ).schedule()
+    work_manager.Work(
+        name="audit_once",
+        script="workers/audit.py",
+        worker_name="audit",
+    ).schedule()
+
+    assert calls["autoclass"] == [
+        "io.github.fector101.workmanagertest.ScriptWorker",
+        "io.github.fector101.workmanagertest.AuditWorker",
+    ]
+
+
+def test_helpers_use_explicit_worker_class(java):
+    _, calls = java
+    work_manager.cancel("audit_once", worker_name="audit")
+    work_manager.cancel_all(worker_name="audit")
+    work_manager.get_info("audit_once", worker_name="audit")
+    work_manager.get_work_infos("audit_once", worker_name="audit")
+    work_manager.get_work_infos_by_tag("demo", worker_name="audit")
+
+    assert calls["autoclass"] == [
+        "io.github.fector101.workmanagertest.AuditWorker",
+    ] * 5
+
+
+def test_chain_uses_explicit_worker_class(java):
+    _, calls = java
+    work_manager.WorkChain(
+        name="audit_chain",
+        steps=[
+            work_manager.Work(
+                name="s1", script="workers/audit.py", worker_name="audit"),
+            work_manager.Work(
+                name="s2", script="workers/audit.py", worker_name="audit"),
+        ],
+        worker_name="audit",
+    ).schedule()
+
+    assert calls["autoclass"] == [
+        "io.github.fector101.workmanagertest.AuditWorker",
+    ]
+
+
 def test_cancel_get_info_and_cancel_all(java):
     _, calls = java
     work = work_manager.Work(name="heartbeat_once", script="workers/heartbeat.py")

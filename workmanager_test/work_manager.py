@@ -4,9 +4,13 @@ The p4a fork must be built with at least one worker, e.g.::
 
     --worker=script:./workers/heartbeat.py
 
-That generates ``<package>.ScriptWorker``. A single generated worker can run
-any bundled script because the script path is part of the WorkRequest input
-data; ``PYTHON_SERVICE_ARGUMENT`` carries a JSON string with user arguments.
+Each ``--worker`` spec generates a distinct ``<Name>Worker`` /
+``<Name>WorkerService`` pair in its own ``:worker_<name>`` process. Pass
+``worker_name="audit"`` to ``Work``, ``WorkChain`` or the query/cancel helpers
+to select another generated class; the default is ``"script"``. A generated
+worker can still run any bundled script because the script path is part of the
+WorkRequest input data; ``PYTHON_SERVICE_ARGUMENT`` carries a JSON string with
+user arguments.
 """
 
 from __future__ import annotations
