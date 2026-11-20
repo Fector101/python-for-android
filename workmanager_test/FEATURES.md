@@ -38,7 +38,7 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
 
 | Feature | State | Notes |
 |---|---|---|
-| Stop reason for constrained work | Missing from verification | The field is read correctly, but WorkManager 2.9.0 reported `NOT_STOPPED` for `ENQUEUED` constrained rows; a real stop-reason case has not been observed. |
+| Stop reason for constrained work | Missing from verification | WorkManager only sets this when a worker that already started is stopped; a job merely `ENQUEUED` while waiting for a constraint has not been stopped, so `NOT_STOPPED` is expected. The Java→Python field is covered by a synthetic unit test, but no genuine stop (e.g. unplugging charging mid-run) was observed on device. |
 
 ## Known test-app caveats
 
@@ -125,6 +125,11 @@ implemented. Every "Partial" row was closed out by the A→B→C→D→E cleanup
 
 ## Suggested order for the next features
 
-None planned. The last item, chained Data propagation, is now done. Still open
-if wanted later: a real stop-reason case for constrained work (the field is
-read correctly, but WorkManager 2.9.0 reports `NOT_STOPPED` while `ENQUEUED`).
+None planned — all features are done, including chained Data propagation. One
+optional loose end remains: we never produced a real non-zero "stop reason" on
+the device. WorkManager only sets that field when a worker that was actually
+running gets stopped (for example, charging is unplugged mid-run). A worker
+merely `ENQUEUED` while waiting for a constraint has not been stopped, so
+WorkManager 2.9.0 correctly reports `NOT_STOPPED` — which is what our runs
+showed. The field's Java→Python plumbing is covered by a synthetic unit test,
+but verifying a genuine stop is left for later.

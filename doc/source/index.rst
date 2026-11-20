@@ -60,6 +60,7 @@ Contents
    bootstraps
    kivy_bootstrap
    services
+   workmanager
    troubleshooting
    docker
    testing_pull_requests
