@@ -681,6 +681,43 @@ def test_work_result_attempt_increments_across_calls(tmp_path, monkeypatch):
     assert (base / "attempt.txt").read_text() == "3"
 
 
+def test_work_result_parent_output_reads_java_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/chain.py")
+    base = tmp_path / "work_data" / "workers_chain.py"
+    base.mkdir(parents=True)
+    (base / "parent_output.json").write_text(
+        '{"step": 1, "message": "from step 1"}')
+    from work_result import parent_output
+
+    assert parent_output() == {"step": 1, "message": "from step 1"}
+
+
+def test_work_result_parent_output_missing_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/chain.py")
+    from work_result import parent_output
+
+    assert parent_output() == {}
+
+
+@pytest.mark.parametrize("payload", [
+    "not json",
+    "[1, 2, 3]",
+    '"a string"',
+])
+def test_work_result_parent_output_invalid_returns_empty(
+        tmp_path, monkeypatch, payload):
+    monkeypatch.setenv("ANDROID_PRIVATE", str(tmp_path))
+    monkeypatch.setenv("ANDROID_ENTRYPOINT", "workers/chain.py")
+    base = tmp_path / "work_data" / "workers_chain.py"
+    base.mkdir(parents=True)
+    (base / "parent_output.json").write_text(payload)
+    from work_result import parent_output
+
+    assert parent_output() == {}
+
+
 def test_fluent_chain_schedules_java_chain(java):
     _, calls = java
     first = work_manager.Work(

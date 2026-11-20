@@ -34,6 +34,7 @@ The app can schedule:
 - a periodic heartbeat (WorkManager's 15-minute minimum);
 - a one-time `workers/failing.py` job that returns exit code 3;
 - a one-time `workers/audit.py` job on the second generated worker class (10 s);
+- a 2-step `workers/chain.py` chain where step 2 receives step 1's output;
 - cancellation and status polling by work name.
 
 Watch for these logcat markers:
@@ -50,6 +51,10 @@ Finished remote python work: 0
 WORKER_MARKER failing pid=... args={'message': 'expected failure'}
 Finished remote python work: 3
 AUDIT_MARKER worker=audit pid=... time=... script=workers/audit.pyc message='audit worker'
+CHAIN_MARKER step=1 time=... pid=...
+PARENT_OUTPUT_MARKER step=1 parent={}
+CHAIN_MARKER step=2 time=... pid=...
+PARENT_OUTPUT_MARKER step=2 parent={'step': 1, 'message': 'chain step 1', ...}
 ```
 
 The UI's status label should eventually show `SUCCEEDED` for the heartbeat and
@@ -92,3 +97,26 @@ Work(
 `cancel`, `cancel_all`, `get_info`, `get_work_infos` and
 `get_work_infos_by_tag`. It resolves to `<package>.<Name>Worker`, so it must
 match a `--worker=NAME:...` entry in `buildozer.spec`.
+
+### Chained Data propagation
+
+WorkManager passes a successful step's output `Data` into the next step's
+input. The generated worker writes that `PYTHON_WORK_OUTPUT` value to
+`work_data/<script>/parent_output.json` before Python starts, so a chain step
+can read the previous step's `set_output()` payload:
+
+```python
+from work_result import parent_output, set_output
+
+previous = parent_output()  # {} for the first step or a failed predecessor
+set_output({
+    "step": 2,
+    "parent_step": previous.get("step"),
+})
+```
+
+`workers/chain.py` uses this to log `PARENT_OUTPUT_MARKER` and include
+`parent_step` in its own output. Only successful predecessors propagate data;
+a failed step blocks the chain. The per-script directory is shared by steps
+using the same script, which is safe because chains run sequentially.
+WorkManager's 10 KB `Data` cap still applies to the parent output.

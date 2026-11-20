@@ -54,6 +54,23 @@ def set_output(data):
     _write("output.json", data)
 
 
+def parent_output():
+    """Return the previous chain step's ``set_output()`` payload.
+
+    WorkManager passes a successful predecessor's output Data into the child's
+    input. The generated Java worker writes that ``PYTHON_WORK_OUTPUT`` value
+    to ``parent_output.json`` in this script's work dir before Python starts.
+    Returns an empty dict when there is no predecessor output or it is invalid.
+    """
+    target = os.path.join(work_dir(), "parent_output.json")
+    try:
+        with open(target, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def request_retry(reason=""):
     """Ask Java to reschedule this work with WorkManager's backoff policy.
 

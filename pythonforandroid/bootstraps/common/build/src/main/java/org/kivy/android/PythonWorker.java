@@ -20,8 +20,10 @@ import com.google.common.util.concurrent.ListenableFuture;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -180,6 +182,15 @@ public abstract class PythonWorker extends RemoteListenableWorker {
         return text.toString();
     }
 
+    private static void writeText(File file, String text) {
+        try (OutputStreamWriter writer = new OutputStreamWriter(
+                new FileOutputStream(file), StandardCharsets.UTF_8)) {
+            writer.write(text);
+        } catch (IOException e) {
+            Log.w(TAG, "Failed to write " + file.getName(), e);
+        }
+    }
+
     private static Data dataFromJson(String key, String json) {
         try {
             Data.Builder builder = new Data.Builder();
@@ -197,6 +208,7 @@ public abstract class PythonWorker extends RemoteListenableWorker {
     @Override
     public ListenableFuture<Result> startRemoteWork() {
         return CallbackToFutureAdapter.getFuture(completer -> {
+            Log.v(TAG, "Worker input data: " + getInputData());
             String dataArg = getInputData().getString(ARGUMENT_SERVICE_ARGUMENT);
             final String serviceArg = dataArg == null ? "" : dataArg;
 
@@ -221,6 +233,17 @@ public abstract class PythonWorker extends RemoteListenableWorker {
                 deleteIfExists(retryFile);
             } else if (!workDir.mkdirs()) {
                 Log.w(TAG, "Could not create work result dir " + workDir);
+            }
+
+            // WorkManager merges a predecessor's output Data into a chained
+            // worker's input. Hand it to Python through the same per-script
+            // directory used for output, progress and retry files.
+            final File parentOutputFile = new File(workDir, "parent_output.json");
+            deleteIfExists(parentOutputFile);
+            String parentJson = getInputData().getString(KEY_WORK_OUTPUT);
+            if (parentJson != null && !parentJson.isEmpty()) {
+                writeText(parentOutputFile, parentJson);
+                Log.i(TAG, "Parent work output available for " + script);
             }
 
             final ScheduledExecutorService progressExecutor =

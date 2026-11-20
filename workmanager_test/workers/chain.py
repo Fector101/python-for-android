@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from work_result import set_output
+from work_result import parent_output, set_output
 
 
 def main() -> int:
@@ -25,9 +25,12 @@ def main() -> int:
     except (TypeError, ValueError):
         sleep_seconds = 8
 
+    previous = parent_output()
     stamp = datetime.now(timezone.utc).isoformat()
     print("CHAIN_MARKER step={} time={} pid={}".format(
         step, stamp, os.getpid()), flush=True)
+    print("PARENT_OUTPUT_MARKER step={} parent={!r}".format(
+        step, previous), flush=True)
 
     # Stay alive long enough that MIUI does not flag the worker process as
     # "frequent died" between steps.
@@ -37,7 +40,10 @@ def main() -> int:
         time.sleep(part)
         slept += part
 
-    set_output({"step": step, "message": message, "time": stamp})
+    result = {"step": step, "message": message, "time": stamp}
+    if "step" in previous:
+        result["parent_step"] = previous["step"]
+    set_output(result)
     return 0
 
 
